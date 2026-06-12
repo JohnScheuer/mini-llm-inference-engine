@@ -68,3 +68,13 @@ void matmul_tiled(Tensor& C, const Tensor& A, const Tensor& B, int tile_size = 6
 
 // V3: Tiling + i-k-j combinado (versão "final")
 void matmul_tiled_ikj(Tensor& C, const Tensor& A, const Tensor& B, int tile_size = 64);
+// === MatMul: Versões com Unrolling e Register Blocking ===
+
+// V4: i-k-j com unroll 4x
+void matmul_ikj_unroll4(Tensor& C, const Tensor& A, const Tensor& B);
+
+// V5: tiled + i-k-j + unroll 4x
+void matmul_tiled_unroll4(Tensor& C, const Tensor& A, const Tensor& B, int tile_size = 128);
+
+// V6: tiled + i-k-j + unroll 8x + register blocking (versão pesada)
+void matmul_tiled_unroll8(Tensor& C, const Tensor& A, const Tensor& B, int tile_size = 128);

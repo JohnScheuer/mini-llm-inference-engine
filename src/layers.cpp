@@ -302,3 +302,174 @@ void matmul_tiled_ikj(Tensor& C, const Tensor& A, const Tensor& B, int tile_size
         }
     }
 }
+// =====================================================
+//  MatMul: Versões com Loop Unrolling
+// =====================================================
+
+// V4: i-k-j com unroll 4x (sem tiling)
+// Processa 4 colunas de C por iteração interna
+void matmul_ikj_unroll4(Tensor& C, const Tensor& A, const Tensor& B) {
+    int M = A.rows;
+    int K = A.cols;
+    int N = B.cols;
+    
+    // Zera C
+    #pragma omp parallel for
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            C.at(i, j) = 0.0f;
+        }
+    }
+    
+    #pragma omp parallel for
+    for (int i = 0; i < M; i++) {
+        for (int k = 0; k < K; k++) {
+            float a_ik = A.at(i, k);
+            const float* B_row = &B.data[k * N];
+            float* C_row = &C.data[i * N];
+            
+            // Loop principal: processa 4 elementos por iteração
+            int j = 0;
+            for (; j + 4 <= N; j += 4) {
+                C_row[j]     += a_ik * B_row[j];
+                C_row[j + 1] += a_ik * B_row[j + 1];
+                C_row[j + 2] += a_ik * B_row[j + 2];
+                C_row[j + 3] += a_ik * B_row[j + 3];
+            }
+            
+            // Resto (se N não for múltiplo de 4)
+            for (; j < N; j++) {
+                C_row[j] += a_ik * B_row[j];
+            }
+        }
+    }
+}
+
+// V5: tiled + i-k-j + unroll 4x
+void matmul_tiled_unroll4(Tensor& C, const Tensor& A, const Tensor& B, int tile_size) {
+    int M = A.rows;
+    int K = A.cols;
+    int N = B.cols;
+    int T = tile_size;
+    
+    // Zera C
+    #pragma omp parallel for
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            C.at(i, j) = 0.0f;
+        }
+    }
+    
+    #pragma omp parallel for collapse(2)
+    for (int i0 = 0; i0 < M; i0 += T) {
+        for (int j0 = 0; j0 < N; j0 += T) {
+            for (int k0 = 0; k0 < K; k0 += T) {
+                int i_max = std::min(i0 + T, M);
+                int j_max = std::min(j0 + T, N);
+                int k_max = std::min(k0 + T, K);
+                
+                for (int i = i0; i < i_max; i++) {
+                    for (int k = k0; k < k_max; k++) {
+                        float a_ik = A.at(i, k);
+                        const float* B_row = &B.data[k * N];
+                        float* C_row = &C.data[i * N];
+                        
+                        // Unroll 4x dentro do tile
+                        int j = j0;
+                        for (; j + 4 <= j_max; j += 4) {
+                            C_row[j]     += a_ik * B_row[j];
+                            C_row[j + 1] += a_ik * B_row[j + 1];
+                            C_row[j + 2] += a_ik * B_row[j + 2];
+                            C_row[j + 3] += a_ik * B_row[j + 3];
+                        }
+                        
+                        // Resto
+                        for (; j < j_max; j++) {
+                            C_row[j] += a_ik * B_row[j];
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// V6: tiled + i-k-j + unroll 8x com register blocking
+// Versão mais agressiva: usa 8 registradores explícitos
+void matmul_tiled_unroll8(Tensor& C, const Tensor& A, const Tensor& B, int tile_size) {
+    int M = A.rows;
+    int K = A.cols;
+    int N = B.cols;
+    int T = tile_size;
+    
+    // Zera C
+    #pragma omp parallel for
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            C.at(i, j) = 0.0f;
+        }
+    }
+    
+    #pragma omp parallel for collapse(2)
+    for (int i0 = 0; i0 < M; i0 += T) {
+        for (int j0 = 0; j0 < N; j0 += T) {
+            for (int k0 = 0; k0 < K; k0 += T) {
+                int i_max = std::min(i0 + T, M);
+                int j_max = std::min(j0 + T, N);
+                int k_max = std::min(k0 + T, K);
+                
+                for (int i = i0; i < i_max; i++) {
+                    float* __restrict__ C_row = &C.data[i * N];
+                    
+                    // Unroll 8x no eixo J
+                    int j = j0;
+                    for (; j + 8 <= j_max; j += 8) {
+                        // Carrega 8 valores de C em "registradores" (variáveis locais)
+                        float c0 = C_row[j];
+                        float c1 = C_row[j + 1];
+                        float c2 = C_row[j + 2];
+                        float c3 = C_row[j + 3];
+                        float c4 = C_row[j + 4];
+                        float c5 = C_row[j + 5];
+                        float c6 = C_row[j + 6];
+                        float c7 = C_row[j + 7];
+                        
+                        // Loop em K acumula tudo nos registradores
+                        for (int k = k0; k < k_max; k++) {
+                            float a_ik = A.at(i, k);
+                            const float* B_row = &B.data[k * N + j];
+                            
+                            c0 += a_ik * B_row[0];
+                            c1 += a_ik * B_row[1];
+                            c2 += a_ik * B_row[2];
+                            c3 += a_ik * B_row[3];
+                            c4 += a_ik * B_row[4];
+                            c5 += a_ik * B_row[5];
+                            c6 += a_ik * B_row[6];
+                            c7 += a_ik * B_row[7];
+                        }
+                        
+                        // Escreve de volta na memória (1 vez só!)
+                        C_row[j]     = c0;
+                        C_row[j + 1] = c1;
+                        C_row[j + 2] = c2;
+                        C_row[j + 3] = c3;
+                        C_row[j + 4] = c4;
+                        C_row[j + 5] = c5;
+                        C_row[j + 6] = c6;
+                        C_row[j + 7] = c7;
+                    }
+                    
+                    // Resto (j não múltiplo de 8)
+                    for (; j < j_max; j++) {
+                        float sum = C_row[j];
+                        for (int k = k0; k < k_max; k++) {
+                            sum += A.at(i, k) * B.at(k, j);
+                        }
+                        C_row[j] = sum;
+                    }
+                }
+            }
+        }
+    }
+}
