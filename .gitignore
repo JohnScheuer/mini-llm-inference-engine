@@ -1,0 +1,5 @@
+build/
+weights/*.bin
+.DS_Store
+*.o
+*.out
