@@ -58,3 +58,13 @@ void ffn_forward(
 // MatMul genérica: C[M x N] = A[M x K] * B[K x N]
 // Versão ingênua (vai ser o baseline pra comparar)
 void matmul_naive(Tensor& C, const Tensor& A, const Tensor& B);
+// === MatMul: Versões otimizadas (para benchmark e comparação) ===
+
+// V1: Loop reordering i-k-j (cache-friendly)
+void matmul_ikj(Tensor& C, const Tensor& A, const Tensor& B);
+
+// V2: Cache blocking (tiling)
+void matmul_tiled(Tensor& C, const Tensor& A, const Tensor& B, int tile_size = 64);
+
+// V3: Tiling + i-k-j combinado (versão "final")
+void matmul_tiled_ikj(Tensor& C, const Tensor& A, const Tensor& B, int tile_size = 64);

@@ -20,8 +20,6 @@ BenchResult Benchmark::run(
     result.warmup_runs = config.warmup_runs;
     result.measured_runs = config.measured_runs;
     
-    // === WARMUP ===
-    // Aquece o cache, o branch predictor, e tira a CPU do power saving
     if (config.verbose) {
         std::cout << "  [" << name << "] Warmup (" << config.warmup_runs << " runs)..." 
                   << std::flush;
@@ -31,7 +29,6 @@ BenchResult Benchmark::run(
     }
     if (config.verbose) std::cout << " ok" << std::endl;
     
-    // === MEDIDAS ===
     std::vector<double> times_ns;
     times_ns.reserve(config.measured_runs);
     
@@ -50,14 +47,11 @@ BenchResult Benchmark::run(
     }
     if (config.verbose) std::cout << " ok" << std::endl;
     
-    // === ESTATÍSTICAS ===
-    // Ordena pra pegar mediana
     std::sort(times_ns.begin(), times_ns.end());
     result.median_ns = times_ns[times_ns.size() / 2];
     result.min_ns = times_ns.front();
     result.max_ns = times_ns.back();
     
-    // Desvio padrão
     double mean = 0.0;
     for (double t : times_ns) mean += t;
     mean /= times_ns.size();
@@ -67,7 +61,6 @@ BenchResult Benchmark::run(
     variance /= times_ns.size();
     result.std_dev_ns = std::sqrt(variance);
     
-    // GFLOPS = flops / seconds / 1e9
     if (flop_count > 0) {
         double seconds = result.median_ns / 1e9;
         result.gflops = flop_count / seconds / 1e9;
@@ -75,7 +68,6 @@ BenchResult Benchmark::run(
         result.gflops = 0.0;
     }
     
-    // Bandwidth = bytes / seconds / 1e9
     if (bytes_accessed > 0) {
         double seconds = result.median_ns / 1e9;
         result.bandwidth_gbs = bytes_accessed / seconds / 1e9;
@@ -87,22 +79,22 @@ BenchResult Benchmark::run(
 }
 
 void Benchmark::print(const BenchResult& r) {
-    std::cout << "\n┌─ " << r.name << " ─\n";
-    std::cout << "│  Tamanho do problema: " << r.problem_size << "\n";
-    std::cout << "│  Threads:             " << r.num_threads << "\n";
-    std::cout << "│  Runs (warmup+med):   " << r.warmup_runs << " + " << r.measured_runs << "\n";
-    std::cout << "│  Tempo mediano:       " << std::fixed << std::setprecision(2) 
+    std::cout << "\n+-- " << r.name << " --\n";
+    std::cout << "|  Tamanho do problema: " << r.problem_size << "\n";
+    std::cout << "|  Threads:             " << r.num_threads << "\n";
+    std::cout << "|  Runs (warmup+med):   " << r.warmup_runs << " + " << r.measured_runs << "\n";
+    std::cout << "|  Tempo mediano:       " << std::fixed << std::setprecision(2) 
               << (r.median_ns / 1e6) << " ms\n";
-    std::cout << "│  Min / Max:           " << (r.min_ns / 1e6) << " / " 
+    std::cout << "|  Min / Max:           " << (r.min_ns / 1e6) << " / " 
               << (r.max_ns / 1e6) << " ms\n";
-    std::cout << "│  Desvio padrão:       " << (r.std_dev_ns / 1e6) << " ms\n";
+    std::cout << "|  Desvio padrao:       " << (r.std_dev_ns / 1e6) << " ms\n";
     if (r.gflops > 0) {
-        std::cout << "│  Performance:         " << std::setprecision(2) << r.gflops << " GFLOPS\n";
+        std::cout << "|  Performance:         " << std::setprecision(2) << r.gflops << " GFLOPS\n";
     }
     if (r.bandwidth_gbs > 0) {
-        std::cout << "│  Bandwidth:           " << r.bandwidth_gbs << " GB/s\n";
+        std::cout << "|  Bandwidth:           " << r.bandwidth_gbs << " GB/s\n";
     }
-    std::cout << "└─\n";
+    std::cout << "+--\n";
 }
 
 void Benchmark::print_table(const std::vector<BenchResult>& results) {
@@ -142,10 +134,8 @@ void Benchmark::save_csv(
         return;
     }
     
-    // Header
     f << "name,problem_size,num_threads,median_ns,min_ns,max_ns,std_dev_ns,gflops,bandwidth_gbs\n";
     
-    // Linhas
     for (const auto& r : results) {
         f << r.name << ","
           << r.problem_size << ","
@@ -159,5 +149,5 @@ void Benchmark::save_csv(
     }
     
     f.close();
-    std::cout << "📊 CSV salvo: " << filepath << std::endl;
+    std::cout << "CSV salvo: " << filepath << std::endl;
 }

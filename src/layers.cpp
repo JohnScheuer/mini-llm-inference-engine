@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <vector>
 #include <omp.h>
+#include <algorithm>
 
 // RMSNorm
 void rmsnorm(Tensor& out, const Tensor& x, const Tensor& gamma, float eps) {
@@ -180,6 +181,124 @@ void matmul_naive(Tensor& C, const Tensor& A, const Tensor& B) {
                 sum += A.at(i, k) * B.at(k, j);
             }
             C.at(i, j) = sum;
+        }
+    }
+}
+// =====================================================
+//  MatMul: Versões otimizadas
+// =====================================================
+
+// V1: Loop reordering (i-k-j) — cache-friendly por usar acessos sequenciais
+// Ganho esperado: 2-5x vs naive
+void matmul_ikj(Tensor& C, const Tensor& A, const Tensor& B) {
+    int M = A.rows;
+    int K = A.cols;
+    int N = B.cols;
+    
+    // Zera C primeiro (porque vamos somar)
+    #pragma omp parallel for
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            C.at(i, j) = 0.0f;
+        }
+    }
+    
+    // Ordem i-k-j: B[k][j] é acessada sequencialmente no loop interno
+    #pragma omp parallel for
+    for (int i = 0; i < M; i++) {
+        for (int k = 0; k < K; k++) {
+            float a_ik = A.at(i, k);  // carrega em registrador
+            const float* B_row = &B.data[k * N];   // ponteiro pra linha
+            float* C_row = &C.data[i * N];         // ponteiro pra linha
+            
+            // Loop interno: tudo sequencial em memória ✨
+            for (int j = 0; j < N; j++) {
+                C_row[j] += a_ik * B_row[j];
+            }
+        }
+    }
+}
+
+// V2: Cache blocking (tiling)
+// Divide a matriz em blocos TILE x TILE que cabem no L1 cache
+// Ganho esperado: 3-7x vs naive
+void matmul_tiled(Tensor& C, const Tensor& A, const Tensor& B, int tile_size) {
+    int M = A.rows;
+    int K = A.cols;
+    int N = B.cols;
+    int T = tile_size;
+    
+    // Zera C
+    #pragma omp parallel for
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            C.at(i, j) = 0.0f;
+        }
+    }
+    
+    // Loop sobre tiles
+    #pragma omp parallel for collapse(2)
+    for (int i0 = 0; i0 < M; i0 += T) {
+        for (int j0 = 0; j0 < N; j0 += T) {
+            for (int k0 = 0; k0 < K; k0 += T) {
+                // Limites do tile atual (cuida das bordas)
+                int i_max = std::min(i0 + T, M);
+                int j_max = std::min(j0 + T, N);
+                int k_max = std::min(k0 + T, K);
+                
+                // Multiplicação dentro do tile (ordem ijk clássica, mas pequena)
+                for (int i = i0; i < i_max; i++) {
+                    for (int j = j0; j < j_max; j++) {
+                        float sum = C.at(i, j);
+                        for (int k = k0; k < k_max; k++) {
+                            sum += A.at(i, k) * B.at(k, j);
+                        }
+                        C.at(i, j) = sum;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// V3: Tiling + i-k-j combinado — versão "topo de linha"
+// Ganho esperado: 5-10x vs naive
+void matmul_tiled_ikj(Tensor& C, const Tensor& A, const Tensor& B, int tile_size) {
+    int M = A.rows;
+    int K = A.cols;
+    int N = B.cols;
+    int T = tile_size;
+    
+    // Zera C
+    #pragma omp parallel for
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            C.at(i, j) = 0.0f;
+        }
+    }
+    
+    // Tiling no nível externo
+    #pragma omp parallel for collapse(2)
+    for (int i0 = 0; i0 < M; i0 += T) {
+        for (int j0 = 0; j0 < N; j0 += T) {
+            for (int k0 = 0; k0 < K; k0 += T) {
+                int i_max = std::min(i0 + T, M);
+                int j_max = std::min(j0 + T, N);
+                int k_max = std::min(k0 + T, K);
+                
+                // Dentro do tile: ordem i-k-j (cache-friendly)
+                for (int i = i0; i < i_max; i++) {
+                    for (int k = k0; k < k_max; k++) {
+                        float a_ik = A.at(i, k);
+                        float* C_row = &C.data[i * N];
+                        const float* B_row = &B.data[k * N];
+                        
+                        for (int j = j0; j < j_max; j++) {
+                            C_row[j] += a_ik * B_row[j];
+                        }
+                    }
+                }
+            }
         }
     }
 }
