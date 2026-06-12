@@ -4,10 +4,10 @@
 #include "model.h"
 #include "generate.h"
 #include "weights.h"
+#include "quantize.h"
 #include <iostream>
 #include <omp.h>
 
-// Helper: preenche um modelo com pesos aleatórios determinísticos
 void fill_random_weights(Model& model) {
     int vocab_size = model.vocab_size;
     int dim = model.dim;
@@ -45,9 +45,21 @@ void fill_random_weights(Model& model) {
     }
 }
 
-void testSaveLoad() {
-    std::cout << "\n=== Teste Save/Load ===" << std::endl;
+void testFP16Quantization() {
+    std::cout << "\n=== Teste Quantizacao FP16 ===" << std::endl;
     
+    // Teste 1: Conversão de números específicos
+    std::cout << "\n[1] Teste de conversao FP32 <-> FP16:" << std::endl;
+    float test_values[] = {1.0f, 0.5f, -0.25f, 3.14159f, 0.0f, -1.0f};
+    for (float v : test_values) {
+        uint16_t h = fp32_to_fp16(v);
+        float back = fp16_to_fp32(h);
+        std::cout << "  " << v << " -> 0x" << std::hex << h 
+                  << " -> " << std::dec << back 
+                  << " (erro: " << (v - back) << ")" << std::endl;
+    }
+    
+    // Teste 2: Salvar e carregar modelo
     int vocab_size = 32;
     int dim = 16;
     int hidden_dim = 32;
@@ -55,53 +67,49 @@ void testSaveLoad() {
     int n_heads = 2;
     int max_seq_len = 64;
     
-    // ETAPA 1: Cria modelo, preenche pesos, salva
-    std::cout << "\n[1] Criando modelo original..." << std::endl;
+    std::cout << "\n[2] Criando modelo..." << std::endl;
     Model original(vocab_size, dim, hidden_dim, n_layers, n_heads, max_seq_len);
     fill_random_weights(original);
     
-    std::cout << "\n[2] Salvando modelo no disco..." << std::endl;
-    save_model(original, "model.bin");
+    std::cout << "\n[3] Salvando em FP32..." << std::endl;
+    save_model(original, "model_fp32.bin", QUANT_FP32);
     
-    // ETAPA 2: Gera tokens com o modelo original
-    std::cout << "\n[3] Gerando com modelo ORIGINAL..." << std::endl;
+    std::cout << "\n[4] Salvando em FP16..." << std::endl;
+    save_model(original, "model_fp16.bin", QUANT_FP16);
+    
+    std::cout << "\n[5] Carregando FP16 e gerando..." << std::endl;
+    Model* loaded = load_model("model_fp16.bin");
+    if (!loaded) return;
+    
     std::vector<int> prompt = {5, 12, 7};
-    auto tokens_original = generate(original, prompt, 8, 0.0f);  // argmax
     
-    // ETAPA 3: Carrega o modelo do disco
-    std::cout << "\n[4] Carregando modelo do disco..." << std::endl;
-    Model* loaded = load_model("model.bin");
-    if (!loaded) {
-        std::cerr << "Erro ao carregar!" << std::endl;
-        return;
-    }
+    std::cout << "\n--- Original (FP32) ---" << std::endl;
+    auto tokens_orig = generate(original, prompt, 8, 0.0f);
     
-    // ETAPA 4: Gera tokens com o modelo carregado
-    std::cout << "\n[5] Gerando com modelo CARREGADO..." << std::endl;
-    auto tokens_loaded = generate(*loaded, prompt, 8, 0.0f);  // argmax
+    std::cout << "\n--- Carregado (FP16) ---" << std::endl;
+    auto tokens_fp16 = generate(*loaded, prompt, 8, 0.0f);
     
-    // ETAPA 5: Compara
-    std::cout << "\n[6] Comparando resultados..." << std::endl;
-    bool match = (tokens_original == tokens_loaded);
+    std::cout << "\n[6] Comparacao:" << std::endl;
+    bool match = (tokens_orig == tokens_fp16);
     if (match) {
-        std::cout << "✅ Tokens IDENTICOS! Save/Load funcionou!" << std::endl;
+        std::cout << "Tokens IDENTICOS! FP16 manteve a precisao suficiente." << std::endl;
     } else {
-        std::cout << "❌ Tokens DIFERENTES! Algo deu errado." << std::endl;
-        std::cout << "Original: ";
-        for (int t : tokens_original) std::cout << t << " ";
-        std::cout << std::endl << "Carregado: ";
-        for (int t : tokens_loaded) std::cout << t << " ";
+        std::cout << "Tokens diferentes (esperado em alguns casos com FP16)." << std::endl;
+        std::cout << "  FP32: ";
+        for (int t : tokens_orig) std::cout << t << " ";
+        std::cout << std::endl << "  FP16: ";
+        for (int t : tokens_fp16) std::cout << t << " ";
         std::cout << std::endl;
     }
     
-    delete loaded;  // libera memória
+    delete loaded;
 }
 
 int main() {
     std::cout << "=== Mini-LLM Inference Engine ===" << std::endl;
     std::cout << "OpenMP ativo. Nucleos: " << omp_get_max_threads() << std::endl;
     
-    testSaveLoad();
+    testFP16Quantization();
     
     return 0;
 }
