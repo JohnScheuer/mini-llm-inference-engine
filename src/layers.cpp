@@ -165,3 +165,21 @@ void ffn_forward(
 
     matmul(out, combined, w2);
 }
+// MatMul ingênua genérica - BASELINE
+// Loop triplo clássico, ordem i-j-k (RUIM pra cache, mas é o padrão)
+void matmul_naive(Tensor& C, const Tensor& A, const Tensor& B) {
+    int M = A.rows;
+    int K = A.cols;
+    int N = B.cols;
+    
+    #pragma omp parallel for collapse(2)
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            float sum = 0.0f;
+            for (int k = 0; k < K; k++) {
+                sum += A.at(i, k) * B.at(k, j);
+            }
+            C.at(i, j) = sum;
+        }
+    }
+}

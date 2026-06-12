@@ -55,3 +55,6 @@ void ffn_forward(
     int dim,
     int hidden_dim
 );
+// MatMul genérica: C[M x N] = A[M x K] * B[K x N]
+// Versão ingênua (vai ser o baseline pra comparar)
+void matmul_naive(Tensor& C, const Tensor& A, const Tensor& B);
