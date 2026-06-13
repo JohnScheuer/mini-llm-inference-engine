@@ -1,34 +1,26 @@
 #include "model.h"
+#include "layers.h"
 #include <cstring>
 
-void model_forward(
-    Tensor& logits,
-    Model& model,
-    int token_id,
-    int pos
-) {
+void model_forward(Tensor& logits, Model& model, int token_id, int pos) {
     int dim = model.dim;
     
-    // 1. EMBEDDING: pega a linha do token_id da tabela de embedding
+    // 1. Embedding
     Tensor x(1, dim);
-    for (int i = 0; i < dim; i++) {
-        x.data[i] = model.token_embedding.at(token_id, i);
-    }
+    float* embed_row = &model.token_embedding.data[token_id * dim];
+    std::memcpy(x.data.data(), embed_row, dim * sizeof(float));
     
-    // 2. Passa por todas as N camadas do Transformer
-    Tensor temp(1, dim);
+    // 2. Camadas
+    Tensor x_next(1, dim);
     for (int l = 0; l < model.n_layers; l++) {
-        transformer_block_forward(
-            temp, x, model.layers[l], 
-            pos, dim, model.hidden_dim, model.n_heads
-        );
-        std::memcpy(x.data.data(), temp.data.data(), dim * sizeof(float));
+        transformer_block_forward(x_next, x, model.layers[l], pos, dim, model.hidden_dim, model.n_heads);
+        std::memcpy(x.data.data(), x_next.data.data(), dim * sizeof(float));
     }
     
-    // 3. RMSNorm final
+    // 3. Norm final
     Tensor normed(1, dim);
     rmsnorm(normed, x, model.norm_final);
     
-    // 4. LM Head: projeta para vocab_size logits
+    // 4. Logits (Usa sua matmul_blocked!)
     matmul(logits, normed, model.lm_head);
 }
