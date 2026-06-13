@@ -3,3 +3,7 @@ weights/*.bin
 .DS_Store
 *.o
 *.out
+mini-llm
+mini-llm-engine
+mini-llm-bench
+*.csv
