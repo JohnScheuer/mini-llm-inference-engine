@@ -1,42 +1,33 @@
 #include "transformer.h"
 #include "layers.h"
 #include <omp.h>
-#include <cstring>
 
 void transformer_block_forward(
-    Tensor& out, const Tensor& x,
+    Tensor& out,
+    const Tensor& x,
     TransformerLayer& layer,
-    int pos, int dim, int hidden_dim, int n_heads
+    int pos,
+    int dim,
+    int hidden_dim,
+    int n_heads
 ) {
-    // --- SUB-BLOCO 1: Attention ---
+    // Garante que a saída tenha o tamanho correto
+    if (out.data.size() < (size_t)dim) out.data.resize(dim);
+
     Tensor normed(1, dim);
-    rmsnorm(normed, x, layer.norm_attn); // Normaliza input
-    
     Tensor attn_out(1, dim);
-    // attention_forward agora usa Dot Product e Agregação AVX2
-    attention_forward(attn_out, normed,
-                      layer.wq, layer.wk, layer.wv, layer.wo,
-                      layer.cache, pos, dim, n_heads);
-    
-    // Residual Connection 1: h = x + attn_out
     Tensor h(1, dim);
-    #pragma omp parallel for
-    for (int i = 0; i < dim; i++) {
-        h.data[i] = x.data[i] + attn_out.data[i];
-    }
-    
-    // --- SUB-BLOCO 2: Feed-Forward (FFN) ---
-    rmsnorm(normed, h, layer.norm_ffn); // Normaliza h
-    
     Tensor ffn_out(1, dim);
-    // ffn_forward usa sua matmul_blocked internamente
-    ffn_forward(ffn_out, normed,
-                layer.w1, layer.w2, layer.w3,
-                dim, hidden_dim);
+
+    // Attention
+    rmsnorm(normed, x, layer.norm_attn);
+    attention_forward(attn_out, normed, layer.wq, layer.wk, layer.wv, layer.wo, layer.cache, pos, dim, n_heads);
     
-    // Residual Connection 2: out = h + ffn_out
-    #pragma omp parallel for
-    for (int i = 0; i < dim; i++) {
-        out.data[i] = h.data[i] + ffn_out.data[i];
-    }
+    for (int i = 0; i < dim; i++) h.data[i] = x.data[i] + attn_out.data[i];
+    
+    // FFN
+    rmsnorm(normed, h, layer.norm_ffn);
+    ffn_forward(ffn_out, normed, layer.w1, layer.w2, layer.w3, dim, hidden_dim);
+    
+    for (int i = 0; i < dim; i++) out.data[i] = h.data[i] + ffn_out.data[i];
 }
