@@ -1,6 +1,7 @@
 #include "benchmark/benchmark.h"
 #include <iostream>
 #include <omp.h>
+#include "matmul_blocked.h"
 
 // Declaração externa (definida em bench_matmul.cpp)
 void run_matmul_benchmarks();

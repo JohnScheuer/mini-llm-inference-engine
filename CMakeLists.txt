@@ -1,23 +1,13 @@
-cmake_minimum_required(VERSION 3.10)
-project(MiniLLM CXX)
+cmake_minimum_required(VERSION 3.15)
+project(FlashLLM)
 
 set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE Release)
-
-# Flags de otimização agressiva
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -ffast-math -DNDEBUG")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native -ffast-math -funroll-loops")
 
 find_package(OpenMP REQUIRED)
 
-# Pega TODOS os .cpp (incluindo subpastas)
-file(GLOB_RECURSE SOURCES "src/*.cpp")
-
+file(GLOB SOURCES "src/*.cpp")
 add_executable(llm ${SOURCES})
 
-# Permite incluir headers de src/ e src/benchmark/
-target_include_directories(llm PUBLIC src src/benchmark)
-
-if(OpenMP_CXX_FOUND)
-    target_link_libraries(llm PRIVATE OpenMP::OpenMP_CXX)
-endif()
+target_link_libraries(llm PUBLIC OpenMP::OpenMP_CXX)

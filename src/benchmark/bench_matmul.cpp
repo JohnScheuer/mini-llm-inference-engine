@@ -1,12 +1,14 @@
 #include "benchmark.h"
 #include "../layers.h"
 #include "../tensor.h"
+#include "../matmul_blocked.h"
 #include <vector>
 #include <iostream>
 #include <iomanip>
 #include <omp.h>
 #include <cstdlib>
 #include <cmath>
+#include <cstring>
 
 static void init_random(Tensor& t, unsigned seed = 42) {
     std::srand(seed);
@@ -25,7 +27,6 @@ static bool verify(const Tensor& C1, const Tensor& C2, float tol = 1e-2f) {
     return true;
 }
 
-// Helper para printar uma linha de resultado
 static void print_result(const std::string& name, double gflops, double ms, 
                           double baseline_ms, bool correct) {
     double speedup = baseline_ms / ms;
@@ -54,8 +55,13 @@ void run_matmul_benchmarks() {
         Tensor A(N, N), B(N, N);
         Tensor C_naive(N, N), C_ikj(N, N), C_tiled_ikj(N, N);
         Tensor C_u4(N, N), C_t_u4(N, N), C_t_u8(N, N);
+        Tensor C_blocked(N, N);
+        
         init_random(A, 42);
         init_random(B, 43);
+        
+        // Zerar C_blocked antes do teste
+        std::fill(C_blocked.data.begin(), C_blocked.data.end(), 0.0f);
         
         long long flops = 2LL * N * N * N;
         long long bytes = (long long)N * N * sizeof(float) * 3;
@@ -106,9 +112,17 @@ void run_matmul_benchmarks() {
         results.push_back(r_t_u8);
         print_result("tiled+unroll8+reg *", r_t_u8.gflops, r_t_u8.median_ns / 1e6, baseline_ms,
                      verify(C_naive, C_t_u8));
+        
+        // ========== NOVA IMPLEMENTAÇÃO (AVX2 + Register Blocking + OpenMP) ==========
+        auto r_blocked = Benchmark::run("matmul_blocked_avx2_" + std::to_string(N),
+            [&]() { matmul_blocked(N, N, N, A.data.data(), B.data.data(), C_blocked.data.data()); },
+            N, flops, bytes, cfg);
+        results.push_back(r_blocked);
+        print_result("matmul_blocked (FMA)", r_blocked.gflops, r_blocked.median_ns / 1e6, baseline_ms,
+                     verify(C_naive, C_blocked));
     }
     
-    // Análise: tile size pra versão final (unroll8)
+    // Tile sweep
     std::cout << "\n--- Tile sweep: tiled_unroll8 em 1024x1024 ---" << std::endl;
     int N = 1024;
     Tensor A(N, N), B(N, N), C(N, N);
