@@ -1,81 +1,61 @@
-#include "model.h"
 #include <iostream>
-#include <omp.h>
+#include <vector>
+#include <string>
 #include <chrono>
+#include <algorithm>
+#include <omp.h>
+#include "model.h"
+#include "tokenizer.h"
+#include "layers.h"
 
-// --------------------------------------------------
-// Argmax simples (greedy decoding)
-// --------------------------------------------------
+bool load_model_weights(Model& model, const std::string& path);
+
 int argmax(const Tensor& logits) {
-    int max_id = 0;
-    float max_val = logits.data[0];
-
-    for (int i = 1; i < logits.cols; i++) {
-        if (logits.data[i] > max_val) {
-            max_val = logits.data[i];
-            max_id = i;
+    // Busca do token 3 para cima para ignorar bytes nulos de escape
+    int best_id = 3;
+    float max_p = logits.data[3];
+    for (int i = 4; i < (int)logits.data.size(); i++) {
+        if (logits.data[i] > max_p) {
+            max_p = logits.data[i];
+            best_id = i;
         }
     }
-    return max_id;
+    return best_id;
 }
 
 int main() {
+    Tokenizer tokenizer;
+    if (!tokenizer.load("vocab/tokenizer.bin")) return 1;
+
+    Model model(32000, 1, 1, 1, 1, 1);
+    if (!load_model_weights(model, "model.bin")) return 1;
+
     std::cout << "==============================================" << std::endl;
-    std::cout << "  Mini-LLM Inference Engine (AVX2 Optimized)" << std::endl;
+    std::cout << "  Mini-LLM Engine - Geração Stories15M" << std::endl;
     std::cout << "==============================================" << std::endl;
-    std::cout << "CPU threads disponiveis: "
-              << omp_get_max_threads() << std::endl;
-
-    // ✅ Ajuste estes valores conforme seu modelo
-    int vocab_size = 32000;
-    int dim = 512;
-    int hidden_dim = 2048;
-    int n_layers = 6;
-    int n_heads = 8;
-    int max_seq = 256;
-
-    Model model(vocab_size, dim, hidden_dim,
-                n_layers, n_heads, max_seq);
-
-    // --------------------------------------------------
-    // Imprime configuração real do modelo
-    // --------------------------------------------------
-    std::cout << "\n[Model Config]\n";
-    std::cout << "vocab_size   = " << model.vocab_size << std::endl;
-    std::cout << "dim          = " << model.dim << std::endl;
-    std::cout << "hidden_dim   = " << model.hidden_dim << std::endl;
-    std::cout << "n_layers     = " << model.n_layers << std::endl;
-    std::cout << "n_heads      = " << model.n_heads << std::endl;
-    std::cout << "max_seq_len  = " << model.max_seq_len << std::endl;
-    std::cout << "head_dim     = "
-              << model.dim / model.n_heads << std::endl;
-
-    int max_tokens = 128;
-    int token = 1;   // token inicial dummy
-    int pos = 0;
 
     Tensor logits(1, model.vocab_size);
-
-    std::cout << "\n[Inference] Gerando "
-              << max_tokens << " tokens...\n";
+    int token = 1; // BOS
+    int pos = 0;
+    std::cout << "\n[História]: " << std::flush;
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    for (int i = 0; i < max_tokens; i++) {
+    for (pos = 0; pos < 100; pos++) {
         model_forward(logits, model, token, pos);
-        token = argmax(logits);
-        pos++;
+        
+        int next_token = argmax(logits);
+        
+        std::cout << tokenizer.decode(token, next_token) << std::flush;
+        
+        token = next_token;
+        if (token == 2) break; // EOS
     }
 
     auto end = std::chrono::high_resolution_clock::now();
-    double elapsed =
-        std::chrono::duration<double>(end - start).count();
-
-    double tok_per_sec = max_tokens / elapsed;
-
-    std::cout << "\n[Performance]\n";
-    std::cout << "Tempo total: " << elapsed << " s\n";
-    std::cout << "Tokens/s:    " << tok_per_sec << std::endl;
+    double s = std::chrono::duration<double>(end - start).count();
+    std::cout << "\n\n----------------------------------------------\n";
+    std::cout << "[Performance] " << (double)pos / s << " tokens/s" << std::endl;
 
     return 0;
 }
