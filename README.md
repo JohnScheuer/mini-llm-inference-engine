@@ -1,83 +1,180 @@
-🧠 Mini-LLM Inference Engine
-C++
-Performance
-GFLOPS
-License
+# 🧠 Mini-LLM Inference Engine (C++ / AVX2)
 
-Um motor de inferência para Large Language Models (LLMs) desenvolvido do zero em C++, focado em performance extrema e otimização de baixo nível para microarquiteturas x86_64 (Zen 3).
+> ⚡ ~420 tokens/s CPU-only (Ryzen 5 5600X)  
+> 🚀 Transformer completo em C++ com AVX2, KV-Cache e modelo real Stories15M
 
-O projeto implementa a arquitetura moderna de Transformers (Llama-style) utilizando kernels manuais em SIMD, superando drasticamente as otimizações padrão de compiladores e atingindo eficiência de nível industrial.
+Motor de inferência Transformer implementado **do zero em C++**, sem PyTorch, TensorFlow ou qualquer framework de ML.
 
-📊 Performance Benchmarks
-Resultados obtidos em um AMD Ryzen 5 5600X (6 Cores / 12 Threads) @ 4.6GHz.
+Compatível com o modelo **Stories15M (llama2.c)** e tokenizer real (`tokenizer.bin`).
 
-Métrica	Resultado	Cenário
-Inference Throughput	421.3 tokens/s	Stories15M (Dim=288, Layers=6)
-Peak Compute	321.8 GFLOPS	FP32 MatMul (1024x1024)
-SIMD Efficiency	~70% do Pico Teórico	Manual AVX2/FMA Kernels
-Latency (M=1)	~2.3 ms/token	Single-token generation
-⚡ Otimizações HPC (High Performance Computing)
-O motor não utiliza bibliotecas externas (como OpenBLAS ou MKL), baseando-se em implementações manuais de alto desempenho:
+---
 
-1. Matrix Multiplication (GEMM) & Vector-Matrix (GEMV)
-Register Blocking (6x16): Micro-kernel desenvolvido em intrínsecos AVX2 que mantém um bloco de 96 elementos da matriz C nos registradores YMM, minimizando o tráfego de memória.
-Hierarchical Tiling: Estratégia de blocagem de cache para níveis L1, L2 e L3.
-Matrix-Vector Shortcut: Caminho de execução específico para inferência (
-M
-=
-1
-M=1), transformando a operação em um varrimento de memória linear ultra-otimizado.
-2. Attention SIMD Pipeline
-Vetorização de Scores: Cálculo de similaridade 
-Q
-⋅
-K
-Q⋅K utilizando produtos escalares paralelos em AVX2.
-SIMD Weighted Sum: Agregação de valores 
-V
-V via instruções _mm256_fmadd_ps, otimizando o gargalo de memória do KV-Cache.
-3. Gerenciamento de Threads e Memória
-Thread Affinity: Fixação de threads em núcleos físicos via OMP_PROC_BIND=true para evitar migração de contexto e poluição de cache.
-Zero-Allocation Loop: Pipeline de geração "malloc-free", eliminando o overhead de gerenciamento de memória do sistema operacional durante a inferência.
-🏗️ Arquitetura do Modelo
-RMSNorm: Normalização de alta estabilidade numérica.
-RoPE (Rotary Positional Embeddings): Codificação de posição moderna para suporte a contextos longos.
-SwiGLU Activation: Implementação eficiente da função de ativação Gated Linear Unit.
-KV-Cache: Implementação O(n) para inferência autoregressiva.
-🚀 Como Executar
-Compilação de Alta Performance
+## 🎯 Objetivo do Projeto
+
+Construir um engine de inferência de LLM:
+
+- ✅ Alto desempenho em CPU
+- ✅ Arquitetura limpa e modular
+- ✅ Controle total de memória
+- ✅ Otimização SIMD (AVX2/FMA)
+- ✅ Compatível com modelo real
+
+---
+
+# 🚀 Performance
+
+### Hardware
+- CPU: AMD Ryzen 5 5600X (6 cores)
+- RAM: 32GB
+- OS: Ubuntu (WSL)
+- Compilação:
+g++ -O3 -march=znver3 -mavx2 -mfma -fopenmp
+
+text
+
+
+### Modelo
+- Stories15M (llama2.c)
+- dim = 288
+- hidden_dim = 768
+- layers = 6
+- heads = 6
+- vocab_size = 32000
+
+### Throughput
+
+| Configuração | Tokens/s |
+|--------------|----------|
+| Baseline inicial | ~22 tok/s |
+| AVX2 matmul + attention SIMD | ~60 tok/s |
+| Versão final (sem nested OpenMP) | **~420 tok/s** |
+
+Teste:
+- 100 tokens autoregressivos
+- KV-cache ativo
+- Batch = 1
+
+---
+
+# 🏗️ Arquitetura
+Embedding
+↓
+N × Transformer Block
+↓
+RMSNorm Final
+↓
+LM Head
+
+text
+
+
+### Transformer Block
+x → RMSNorm → Multi-Head Attention → +residual
+→ RMSNorm → SwiGLU FFN → +residual
+
+text
+
+
+---
+
+# ⚡ Otimizações Implementadas
+
+## ✅ AVX2 GEMM (6×16 Register Blocking)
+- `_mm256_fmadd_ps`
+- Cache tiling
+- Layout cache-friendly
+- FMA acceleration
+
+## ✅ Attention SIMD
+- AVX2 dot product (Q·K)
+- AVX2 weighted sum com V
+- Redução horizontal vetorizada
+
+## ✅ KV-Cache
+- Complexidade O(n) por token
+- Armazenamento eficiente
+- Sem recomputação de chaves/valores
+
+## ✅ Loader Binário Real
+- Leitura correta do header (llama2.c)
+- Ordem intercalada de camadas
+- Suporte a embeddings compartilhados
+
+## ✅ Paralelização Controlada
+- Nested OpenMP removido
+- Melhor uso de SIMD ao invés de oversubscription
+- Redução significativa de overhead
+
+---
+
+# 📂 Estrutura do Projeto
+src/
+├── tensor.h
+├── layers.cpp
+├── transformer.cpp
+├── model.cpp
+├── matmul_blocked.cpp
+├── kernel_avx2.h
+├── tokenizer.cpp
+└── main.cpp
+
+text
+
+
+---
+
+# 🔧 Build
+
+```bash
+git clone <repo>
+cd mini-llm-interface
+
+g++ -O3 -march=znver3 -mfma -mavx2 -fopenmp \
+    -Isrc src/*.cpp \
+    -o mini-llm-engine
+▶️ Run
 Bash
 
-# Compilar o engine otimizado para Zen 3 (Ryzen)
-g++ -O3 -march=znver3 -mfma -mavx2 -fopenmp -Isrc src/*.cpp -o mini-llm-engine
-Execução com Afinidade de Núcleos
-Para atingir os 400+ tokens/s, é crucial prender as threads nos núcleos físicos:
-
-C++
-
-# Configuração para Ryzen 5 5600X (6 núcleos físicos)
 export OMP_NUM_THREADS=6
 export OMP_PROC_BIND=true
 export OMP_PLACES=cores
 
 ./mini-llm-engine
-📂 Estrutura do Projeto
-src/kernel_avx2.h: Micro-kernels de baixo nível e intrínsecos SIMD.
-src/matmul_blocked.cpp: Implementação GEMM/GEMV de alto desempenho.
-src/layers.cpp: Camadas do Transformer (Attention, RMSNorm, FFN) vetorizadas.
-src/tokenizer.cpp: Leitor binário de vocabulário (Padrão Llama 2).
-src/model.cpp: Carregador de pesos e lógica de Forward Pass.
-🗺️ Roadmap
- Kernels AVX2/FMA (321 GFLOPS)
- Inferência em Tempo Real (421 tokens/s)
- Suporte ao formato Llama 2 (.bin)
- Quantização INT8/Q4_0 (Meta: 1000+ tokens/s)
- Flash-style Attention (Otimização de banda de memória)
- Interface de Chat Interativa
-📄 Licença
-Distribuído sob a licença MIT. Veja LICENSE para mais informações.
+📌 Exemplo de Saída
+text
 
-Autor: John Scheuer
-Hardware: Ryzen 5 5600X | 32GB RAM | WSL2 Ubuntu
+Once upon a time, there was a little girl named Lily...
+🧠 Engenharia de Performance
+Principais decisões técnicas:
 
+SIMD > paralelização ingênua (batch=1)
+Remoção de nested OpenMP
+Alinhamento correto de layout binário
+Controle manual de leitura de pesos
+Diagnóstico com AddressSanitizer
+Redução de alocações dinâmicas
+📊 Evolução do Projeto
+Implementação ingênua → ~22 tok/s
+Matmul bloqueado AVX2 → ~60 tok/s
+Attention vetorizado → ~100+ tok/s
+Remoção de nested OpenMP → ~400+ tok/s
+Integração modelo real Stories15M
+🛣️ Roadmap
+ Transformer completo
+ KV-cache
+ AVX2 SIMD
+ Loader binário compatível
+ INT8 quantization
+ Flash-style attention
+ AVX512
+ Backend CUDA
+📚 Referências
+Attention Is All You Need
+RoPE
+SwiGLU
+llama2.c (Karpathy)
+TinyStories
+👨‍💻 Autor
+John Scheuer
 
+⭐ Se este projeto te ajudou, deixe uma estrela!
