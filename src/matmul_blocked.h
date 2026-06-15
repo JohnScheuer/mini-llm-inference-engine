@@ -1,15 +1,11 @@
-#ifndef MATMUL_BLOCKED_H
-#define MATMUL_BLOCKED_H
+#pragma once
+#include "tensor_int8.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+// Motor GEMV de alta performance
+void matmul_gemv_int8_avx2(int N, int K, const BlockQ8_0* W, const BlockQ8_0* X, float* Y);
 
-// A interface limpa que o resto do seu engine vai usar
+// Wrapper para inferência
+void matmul_blocked_int8(int M, int N, int K, const BlockQ8_0* W, const float* X_fp32, float* Y);
+
+// Fallback para compatibilidade
 void matmul_blocked(int M, int N, int K, const float* A, const float* B, float* C);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif // MATMUL_BLOCKED_H

@@ -35,9 +35,7 @@ struct Model {
     }
 };
 
-void model_forward(
-    Tensor& logits,
-    Model& model,
-    int token_id,
-    int pos
-);
+void model_forward(Tensor& logits, Model& model, int token_id, int pos);
+
+// NOVO: Função que quantizará os pesos logo após carregar do disco
+void quantize_model_weights(Model& model);

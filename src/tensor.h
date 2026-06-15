@@ -1,10 +1,12 @@
 #pragma once
 #include <vector>
 #include <iostream>
+#include "tensor_int8.h" // Incluímos a estrutura de blocos INT8
 
 // Nossa estrutura de dados básica para guardar pesos e ativações
 struct Tensor {
-    std::vector<float> data;
+    std::vector<float> data;           // Usado para Ativações e fallback FP32
+    std::vector<BlockQ8_0> q_data;     // NOVO: Usado para Pesos Quantizados (INT8)
     int rows;
     int cols;
 

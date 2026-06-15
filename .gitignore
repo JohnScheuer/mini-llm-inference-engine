@@ -1,9 +1,13 @@
-build/
-weights/*.bin
-.DS_Store
+# Binários e Executáveis
+mini_llm
+mini_llm_final
+gen_test
 *.o
-*.out
-mini-llm
-mini-llm-engine
-mini-llm-bench
-*.csv
+
+# Modelos (muito grandes para o git)
+*.bin
+
+# Pastas de Build
+build/
+.vscode/
+.idea/

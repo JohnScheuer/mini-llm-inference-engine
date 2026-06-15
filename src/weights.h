@@ -1,33 +1,26 @@
 #pragma once
-#include "model.h"
-#include <string>
-#include <cstdint>
 
-constexpr uint32_t MLLM_MAGIC = 0x4D4C4C4D;
-constexpr uint32_t MLLM_VERSION = 1;
+#include "tensor.h"
+#include <fstream>
+#include <vector>
 
-// Tipo de quantização
-enum QuantType : uint32_t {
-    QUANT_FP32 = 0,
-    QUANT_FP16 = 1
-};
+// -------------------------------------------------------------------------
+// DECLARAÇÕES DE I/O DE DISCO (READ / WRITE)
+// -------------------------------------------------------------------------
 
-struct ModelHeader {
-    uint32_t magic;
-    uint32_t version;
-    uint32_t quant_type;  // ← NOVO: tipo de quantização
-    int32_t vocab_size;
-    int32_t dim;
-    int32_t hidden_dim;
-    int32_t n_layers;
-    int32_t n_heads;
-    int32_t max_seq_len;
-    int32_t reserved;  // padding
-};
+// Leitura e Escrita em formato FP32 (Padrão do seu model.bin atual, 4 bytes)
+void write_tensor_fp32(std::ofstream& out, const Tensor& t);
+void read_tensor_fp32(std::ifstream& in, Tensor& t);
 
-// Salva o modelo, com opção de quantização
-bool save_model(const Model& model, const std::string& filepath, 
-                QuantType quant = QUANT_FP32);
+// Leitura e Escrita em formato FP16 (Comprimido, 2 bytes)
+void write_tensor_fp16(std::ofstream& out, const Tensor& t);
+void read_tensor_fp16(std::ifstream& in, Tensor& t);
 
-// Carrega o modelo (detecta a quantização automaticamente)
-Model* load_model(const std::string& filepath);
+
+// -------------------------------------------------------------------------
+// DECLARAÇÕES DE CONVERSÃO DE HARDWARE
+// -------------------------------------------------------------------------
+
+// Expostas caso você precise converter vetores avulsos em outras partes do código
+void tensor_to_fp16(const Tensor& t, std::vector<unsigned short>& out_fp16);
+void fp16_to_tensor(const std::vector<unsigned short>& in_fp16, Tensor& t);
