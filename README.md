@@ -16,6 +16,19 @@ All benchmarks: AMD Ryzen 5 5600X (6 physical cores), INT8 W8A32, greedy decodin
 | stories110M | 110M | 12 | 768 | 512 | **229 tok/s** | 4.37 ms |
 | stories110M | 110M | 12 | 768 | 1,023 | **203 tok/s** | 4.93 ms |
 
+### GPU Benchmarks (RTX 2070, 8GB)
+
+| Kernel | Latência |
+|:---|:---|
+| RMSNorm | 6.6 μs |
+| RoPE | 5.1 μs |
+| SiLU (SwiGLU) | 4.7 μs |
+| **Total por camada** | **~16.4 μs** |
+| **Throughput estimado** | **~10,000 tok/s** (kernels only) |
+
+> **Nota:** Estes números são apenas dos kernels customizados (RMSNorm, RoPE, SiLU). 
+> A integração completa com cuBLAS para as projeções Q/K/V/FFN está em desenvolvimento.
+
 ## 🛠️ Optimizations Implemented
 
 ### Compute
