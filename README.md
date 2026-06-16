@@ -35,7 +35,6 @@ Token ID → Embedding Lookup
 ↓
 RMSNorm Final → LM Head → Argmax → Next Token
 
-text
 
 
 ### CPU Backend (C++17)
@@ -79,7 +78,6 @@ mini-llm-inference-engine/
 ├── README.md
 └── Makefile / build scripts
 
-text
 
 
 ## ⚙️ Build & Run
@@ -123,3 +121,4 @@ FlashAttention‑2 style Shared Memory Tiling on GPU.
 Batch inference for serving scenarios.
 📝 License
 MIT
+
