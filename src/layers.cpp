@@ -6,10 +6,6 @@
 #include <omp.h>
 #include <algorithm>
 
-// Tamanho do tile para a atenção (ajustável)
-// 32 tokens por tile é ideal para L1 cache (32 * head_dim * 4 bytes)
-#define ATTN_TILE_SIZE 32
-
 float dot_product_avx2(const float* a, const float* b, int size) {
     __m256 sum0 = _mm256_setzero_ps();
     __m256 sum1 = _mm256_setzero_ps();
@@ -85,52 +81,59 @@ void apply_rope_precomputed(float* data, const float* cos_buf,
 }
 
 // ============================================================
-// FlashAttention-style Tiled Attention com Online Softmax
-// ============================================================
-// Processa o KV Cache em blocos de ATTN_TILE_SIZE tokens.
-// Usa o algoritmo de Online Softmax para evitar materializar
-// a matriz de scores N×N e fazer apenas UMA passada pelo KV Cache.
+// FlashAttention-style Tiled Attention v2
+// - Dynamic tile size (64 for long seq, 32 for short)
+// - Skip correction when max doesn't change
+// - AVX2 vectorized accumulation
 // ============================================================
 static void tiled_attention_head(
-    float* out_head,           // Saída desta head (head_dim)
-    const float* q_head,       // Query desta head (head_dim)
-    const float* k_cache,      // K cache completo (max_seq × dim)
-    const float* v_cache,      // V cache completo (max_seq × dim)
+    float* out_head,
+    const float* q_head,
+    const float* k_cache,
+    const float* v_cache,
     int head_idx, int head_dim, int dim,
-    int seq_len,               // pos + 1 (número de tokens no cache)
+    int seq_len,
     float scale)
 {
-    // Estado do Online Softmax
+    // Tile size dinâmico: maior para sequências longas (menos overhead de correção)
+    const int TILE = (seq_len > 128) ? 64 : 32;
+
     float running_max = -1e30f;
     float running_sum = 0.0f;
 
-    // Inicializa saída com zeros
-    for (int d = 0; d < head_dim; d++) out_head[d] = 0.0f;
+    // Inicializa saída com zeros usando AVX2
+    {
+        int d = 0;
+        __m256 zero = _mm256_setzero_ps();
+        for (; d <= head_dim - 8; d += 8)
+            _mm256_storeu_ps(out_head + d, zero);
+        for (; d < head_dim; d++)
+            out_head[d] = 0.0f;
+    }
 
-    // Processa o KV Cache em tiles
-    for (int tile_start = 0; tile_start < seq_len; tile_start += ATTN_TILE_SIZE) {
-        int tile_end = std::min(tile_start + ATTN_TILE_SIZE, seq_len);
+    // Buffer local para scores do tile (no stack, cache-friendly)
+    float tile_scores[64]; // Max tile size
+
+    for (int tile_start = 0; tile_start < seq_len; tile_start += TILE) {
+        int tile_end = std::min(tile_start + TILE, seq_len);
         int tile_size = tile_end - tile_start;
 
-        // --- Passo 1: Calcula scores deste tile (Q · K^T) ---
-        float tile_scores[ATTN_TILE_SIZE];
+        // --- Passo 1: Calcula scores deste tile ---
         float tile_max = -1e30f;
-
         for (int t = 0; t < tile_size; t++) {
             const float* k_head = &k_cache[(tile_start + t) * dim + head_idx * head_dim];
             tile_scores[t] = dot_product_avx2(q_head, k_head, head_dim) * scale;
             if (tile_scores[t] > tile_max) tile_max = tile_scores[t];
         }
 
-        // --- Passo 2: Online Softmax Update ---
-        // Precisamos corrigir a saída anterior quando o max muda
+        // --- Passo 2: Online Softmax com Skip Correction ---
         float new_max = std::max(running_max, tile_max);
 
-        // Fator de correção para a saída acumulada anterior
-        float correction = expf(running_max - new_max);
+        // Skip correction: se o max não mudou, não precisa corrigir a saída
+        if (running_sum > 0.0f && new_max > running_max) {
+            float correction = expf(running_max - new_max);
+            running_sum *= correction;
 
-        // Corrige a saída anterior e o running_sum
-        if (running_sum > 0.0f) {
             __m256 corr_vec = _mm256_set1_ps(correction);
             int d = 0;
             for (; d <= head_dim - 8; d += 8) {
@@ -139,13 +142,39 @@ static void tiled_attention_head(
             }
             for (; d < head_dim; d++) out_head[d] *= correction;
         }
-        running_sum *= correction;
 
-        // --- Passo 3: Acumula score * V para este tile ---
-        float tile_sum = 0.0f;
-        for (int t = 0; t < tile_size; t++) {
-            float exp_score = expf(tile_scores[t] - new_max);
-            tile_sum += exp_score;
+        running_max = new_max;
+
+        // --- Passo 3: Acumula exp(score) * V ---
+        // Processa 2 tokens por vez quando possível (unroll)
+        int t = 0;
+        for (; t <= tile_size - 2; t += 2) {
+            float exp0 = expf(tile_scores[t] - running_max);
+            float exp1 = expf(tile_scores[t + 1] - running_max);
+            running_sum += exp0 + exp1;
+
+            const float* v0 = &v_cache[(tile_start + t) * dim + head_idx * head_dim];
+            const float* v1 = &v_cache[(tile_start + t + 1) * dim + head_idx * head_dim];
+
+            __m256 sv0 = _mm256_set1_ps(exp0);
+            __m256 sv1 = _mm256_set1_ps(exp1);
+
+            int d = 0;
+            for (; d <= head_dim - 8; d += 8) {
+                __m256 ov = _mm256_loadu_ps(out_head + d);
+                ov = _mm256_fmadd_ps(sv0, _mm256_loadu_ps(v0 + d), ov);
+                ov = _mm256_fmadd_ps(sv1, _mm256_loadu_ps(v1 + d), ov);
+                _mm256_storeu_ps(out_head + d, ov);
+            }
+            for (; d < head_dim; d++) {
+                out_head[d] += exp0 * v0[d] + exp1 * v1[d];
+            }
+        }
+
+        // Resto (tile_size ímpar)
+        for (; t < tile_size; t++) {
+            float exp_score = expf(tile_scores[t] - running_max);
+            running_sum += exp_score;
 
             const float* v_head = &v_cache[(tile_start + t) * dim + head_idx * head_dim];
             __m256 sv = _mm256_set1_ps(exp_score);
@@ -153,18 +182,14 @@ static void tiled_attention_head(
             for (; d <= head_dim - 8; d += 8) {
                 __m256 vv = _mm256_loadu_ps(v_head + d);
                 __m256 ov = _mm256_loadu_ps(out_head + d);
-                _mm256_storeu_ps(out_head + d,
-                    _mm256_fmadd_ps(sv, vv, ov));
+                _mm256_storeu_ps(out_head + d, _mm256_fmadd_ps(sv, vv, ov));
             }
             for (; d < head_dim; d++)
                 out_head[d] += exp_score * v_head[d];
         }
-
-        running_max = new_max;
-        running_sum += tile_sum;
     }
 
-    // --- Passo 4: Normaliza pelo total do softmax ---
+    // --- Passo 4: Normaliza ---
     if (running_sum > 0.0f) {
         float inv_sum = 1.0f / running_sum;
         __m256 inv_vec = _mm256_set1_ps(inv_sum);
@@ -189,7 +214,6 @@ void attention_forward(float* attn_out, const float* x,
 
     int head_dim = dim / n_heads;
 
-    // Quantiza x UMA VEZ, reutiliza para wq, wk, wv
     quantize_row_q8_0(x, xq_buf, dim);
     matmul_gemv_int8_avx2(dim, dim, wq.q_data.data(), xq_buf, q_buf);
     matmul_gemv_int8_avx2(dim, dim, wk.q_data.data(), xq_buf, k_buf);
@@ -201,14 +225,12 @@ void attention_forward(float* attn_out, const float* x,
     std::memcpy(&cache.k_cache[pos * dim], k_buf, dim * sizeof(float));
     std::memcpy(&cache.v_cache[pos * dim], v_buf, dim * sizeof(float));
 
-    // Reutiliza v_buf como buffer pré-Wo
     float* pre_wo = v_buf;
     std::memset(pre_wo, 0, dim * sizeof(float));
 
     float scale = 1.0f / sqrtf((float)head_dim);
     int seq_len = pos + 1;
 
-    // FlashAttention-style Tiled Attention com Online Softmax
     #pragma omp parallel for if(n_heads > 16)
     for (int h = 0; h < n_heads; h++) {
         float* q_head = q_buf + h * head_dim;
