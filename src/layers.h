@@ -1,80 +1,40 @@
-#pragma once
-#include "tensor.h"
-#include <vector>
+#ifndef LAYERS_H
+#define LAYERS_H
 
-// RMSNorm
-void rmsnorm(Tensor& out, const Tensor& x, const Tensor& gamma, float eps = 1e-5f);
+#include "model.h"
 
-// RoPE
-void apply_rope(Tensor& x, int pos, int dim);
+// RMSNorm vetorizado (AVX2)
+void rmsnorm(float* o, const float* x, const float* gamma,
+             int dim, float eps);
 
-// MatMul
-void matmul(Tensor& out, const Tensor& a, const Tensor& b);
-
-// Softmax
 void softmax(float* x, int size);
 
-// KV-Cache
-struct KVCache {
-    std::vector<float> k_cache;
-    std::vector<float> v_cache;
-    int max_seq_len;
-    int dim;
+// RoPE com tabelas pré-computadas
+void apply_rope_precomputed(float* data, const float* cos_buf,
+                            const float* sin_buf, int dim);
 
-    KVCache(int max_seq, int d) 
-        : k_cache(max_seq * d, 0.0f), 
-          v_cache(max_seq * d, 0.0f), 
-          max_seq_len(max_seq), 
-          dim(d) {}
-};
+// Dot product AVX2
+float dot_product_avx2(const float* a, const float* b, int size);
 
-// Multi-Head Attention com KV-Cache
-void attention_forward(
-    Tensor& out,
-    const Tensor& x,
-    const Tensor& wq,
-    const Tensor& wk,
-    const Tensor& wv,
-    const Tensor& wo,
-    KVCache& cache,
-    int pos,
-    int dim,
-    int n_heads
-);
+// Attention com RunState (zero alocações)
+void attention_forward(float* attn_out, const float* x,
+                       const Tensor& wq, const Tensor& wk,
+                       const Tensor& wv, const Tensor& wo,
+                       KVCache& cache,
+                       float* q_buf, float* k_buf,
+                       float* v_buf, float* scores_buf,
+                       const float* rope_cos, const float* rope_sin,
+                       int pos, int dim, int n_heads,
+                       int max_seq_len, BlockQ8_0* xq_buf);
 
-// SiLU
-float silu(float x);
+// FFN com RunState (zero alocações)
+void ffn_forward(float* out, const float* x,
+                 const Tensor& w1, const Tensor& w2, const Tensor& w3,
+                 float* ffn_g_buf, float* ffn_u_buf,
+                 int dim, int hidden_dim, BlockQ8_0* xq_buf);
 
-// FFN com SwiGLU
-void ffn_forward(
-    Tensor& out,
-    const Tensor& x,
-    const Tensor& w1,
-    const Tensor& w2,
-    const Tensor& w3,
-    int dim,
-    int hidden_dim
-);
-// MatMul genérica: C[M x N] = A[M x K] * B[K x N]
-// Versão ingênua (vai ser o baseline pra comparar)
-void matmul_naive(Tensor& C, const Tensor& A, const Tensor& B);
-// === MatMul: Versões otimizadas (para benchmark e comparação) ===
+// Quantização do modelo
+void quantize_tensor_to_int8(Tensor& t);
+void quantize_model_weights(Model& m);
 
-// V1: Loop reordering i-k-j (cache-friendly)
-void matmul_ikj(Tensor& C, const Tensor& A, const Tensor& B);
-
-// V2: Cache blocking (tiling)
-void matmul_tiled(Tensor& C, const Tensor& A, const Tensor& B, int tile_size = 64);
-
-// V3: Tiling + i-k-j combinado (versão "final")
-void matmul_tiled_ikj(Tensor& C, const Tensor& A, const Tensor& B, int tile_size = 64);
-// === MatMul: Versões com Unrolling e Register Blocking ===
-
-// V4: i-k-j com unroll 4x
-void matmul_ikj_unroll4(Tensor& C, const Tensor& A, const Tensor& B);
-
-// V5: tiled + i-k-j + unroll 4x
-void matmul_tiled_unroll4(Tensor& C, const Tensor& A, const Tensor& B, int tile_size = 128);
-
-// V6: tiled + i-k-j + unroll 8x + register blocking (versão pesada)
-void matmul_tiled_unroll8(Tensor& C, const Tensor& A, const Tensor& B, int tile_size = 128);
+#endif
