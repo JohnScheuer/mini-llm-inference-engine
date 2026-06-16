@@ -5,6 +5,7 @@
 #include <vector>
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
 #include <immintrin.h>
 #include <omp.h>
 
@@ -27,47 +28,71 @@ inline void residual_add(float* a, const float* b, int dim) {
     for (; i < dim; i++) a[i] += b[i];
 }
 
+// Extrai o nome do modelo a partir do caminho do arquivo
+std::string extract_model_name(const std::string& path) {
+    size_t last_slash = path.find_last_of('/');
+    size_t last_dot = path.find_last_of('.');
+    if (last_slash == std::string::npos) last_slash = 0;
+    else last_slash++;
+    if (last_dot == std::string::npos) last_dot = path.size();
+    return path.substr(last_slash, last_dot - last_slash);
+}
+
 int main(int argc, char* argv[]) {
-    // --- 0. Configurar Threads (cores físicos apenas) ---
+    // --- 0. Configurar Threads ---
     int num_physical_cores = omp_get_max_threads() / 2;
     if (num_physical_cores < 1) num_physical_cores = 1;
     omp_set_num_threads(num_physical_cores);
 
-    // --- 1. Carregar Modelo ---
+    // --- 1. Parse argumentos ---
     std::string model_path = "models/stories15M.bin";
-    if (argc > 1) model_path = argv[1];
+    int max_gen_tokens = 100;
 
+    if (argc > 1) model_path = argv[1];
+    if (argc > 2) max_gen_tokens = std::atoi(argv[2]);
+
+    std::string model_name = extract_model_name(model_path);
+
+    // --- 2. Carregar Modelo ---
     Model m;
     if (!load_model_weights(m, model_path)) {
         std::cerr << "Falha ao carregar modelo!" << std::endl;
         return 1;
     }
 
-    // --- 2. Quantizar Pesos ---
+    // Validar tokens solicitados
+    if (max_gen_tokens > m.max_seq_len - 1) {
+        std::cerr << "[Warn] Tokens solicitados (" << max_gen_tokens
+                  << ") > max_seq_len-1 (" << m.max_seq_len - 1
+                  << "). Limitando." << std::endl;
+        max_gen_tokens = m.max_seq_len - 1;
+    }
+
+    // --- 3. Quantizar Pesos ---
     std::cout << "[Init] Quantizando pesos para INT8..." << std::endl;
     quantize_model_weights(m);
 
-    // --- 3. Inicializar RunState ---
+    // --- 4. Inicializar RunState ---
     RunState s;
     init_run_state(s, m);
 
-    // --- 4. Inicializar KV Cache ---
+    // --- 5. Inicializar KV Cache ---
     KVCache cache(m.max_seq_len, m.dim);
 
-    // --- 5. Configurar Prompt ---
+    // --- 6. Configurar Prompt ---
     std::vector<int> prompt_tokens = {1};
-    int max_gen_tokens = 100;
 
     int token = prompt_tokens[0];
     int next;
     int total_tokens_generated = 0;
 
-    std::cout << "[Init] Iniciando inferência..." << std::endl;
+    std::cout << "[Init] Gerando " << max_gen_tokens
+              << " tokens com " << model_name << "..." << std::endl;
     std::cout << "----------------------------------------" << std::endl;
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    // --- 6. Loop de Inferência ---
+    // --- 7. Loop de Inferência ---
     for (int pos = 0; pos < m.max_seq_len; pos++) {
 
         float* emb_row = m.token_embedding.data.data()
@@ -127,7 +152,7 @@ int main(int argc, char* argv[]) {
         token = next;
     }
 
-    // --- 7. Performance ---
+    // --- 8. Performance ---
     auto end = std::chrono::high_resolution_clock::now();
     double elapsed = std::chrono::duration<double>(end - start).count();
     double tok_s = total_tokens_generated / elapsed;
@@ -135,10 +160,14 @@ int main(int argc, char* argv[]) {
     std::cout << "\n========================================" << std::endl;
     std::cout << " Mini-LLM Inference Engine (HPC Focus)" << std::endl;
     std::cout << "========================================" << std::endl;
-    std::cout << " Model:          Stories15M" << std::endl;
+    std::cout << " Model:          " << model_name << std::endl;
+    std::cout << " Parameters:     dim=" << m.dim
+              << " layers=" << m.n_layers
+              << " heads=" << m.n_heads << std::endl;
     std::cout << " Quantization:   INT8 (W8A32)" << std::endl;
     std::cout << " Hardware:       " << num_physical_cores
               << " threads (physical cores)" << std::endl;
+    std::cout << " Max Seq Len:    " << m.max_seq_len << std::endl;
     std::cout << "----------------------------------------" << std::endl;
     std::cout << " Tokens Gerados: " << total_tokens_generated << std::endl;
     std::cout << " Tempo Total:    " << elapsed << "s" << std::endl;

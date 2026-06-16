@@ -4,14 +4,17 @@ A bare-metal Transformer inference engine built in pure C++17, designed
 to push the theoretical performance limits of x86_64 CPUs through
 low-level optimization.
 
-## 🚀 Performance
+## 🚀 Performance Benchmarks
 
-| Metric | Value |
-|---|---|
-| **Throughput** | **~2,730 tokens/s** |
-| **Latency** | < 0.37ms per token |
-| **Hardware** | AMD Ryzen 5 5600X (6-Core Zen 3) |
-| **Model** | Stories15M (INT8 W8A32) |
+All benchmarks: AMD Ryzen 5 5600X (6 physical cores), INT8 W8A32, greedy decoding.
+
+| Model | Params | Layers | Dim | Tokens | Throughput | Latency |
+|---|---|---|---|---|---|---|
+| stories15M | 15M | 6 | 288 | 100 | **2,411 tok/s** | 0.41 ms |
+| stories42M | 42M | 8 | 512 | 512 | **645 tok/s** | 1.55 ms |
+| stories42M | 42M | 8 | 512 | 1,023 | **544 tok/s** | 1.84 ms |
+| stories110M | 110M | 12 | 768 | 512 | **229 tok/s** | 4.37 ms |
+| stories110M | 110M | 12 | 768 | 1,023 | **203 tok/s** | 4.93 ms |
 
 ## 🛠️ Optimizations Implemented
 
