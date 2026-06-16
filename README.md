@@ -1,134 +1,125 @@
 # Mini-LLM Inference Engine (HPC Focus)
 
-A bare-metal Transformer inference engine built in pure C++17, designed
-to push the theoretical performance limits of x86_64 CPUs through
-low-level optimization.
+A bare-metal Transformer inference engine built in pure C++17 and CUDA,
+designed to push hardware to its limits — from x86 SIMD to NVIDIA Tensor
+Cores.
 
-## 🚀 Performance Benchmarks
+## 🚀 Performance
 
-All benchmarks: AMD Ryzen 5 5600X (6 physical cores), INT8 W8A32, greedy decoding.
+| Backend | Model | Tokens | Throughput | Latency |
+|---|---|---|---|---|
+| CPU (C++17, AVX2, INT8) | stories15M | 100 | **2,730 tok/s** | 0.37 ms |
+| CPU (C++17, AVX2, INT8) | stories42M | 512 | **685 tok/s** | 1.46 ms |
+| CPU (C++17, AVX2, INT8) | stories110M | 512 | **246 tok/s** | 4.06 ms |
+| GPU (CUDA, FP16 + Tensor Cores) | stories110M | 512 | **1,740 tok/s** | 0.57 ms |
 
-| Model | Params | Layers | Dim | Tokens | Throughput | Latency |
-|---|---|---|---|---|---|---|
-| stories15M | 15M | 6 | 288 | 100 | **2,411 tok/s** | 0.41 ms |
-| stories42M | 42M | 8 | 512 | 512 | **645 tok/s** | 1.55 ms |
-| stories42M | 42M | 8 | 512 | 1,023 | **544 tok/s** | 1.84 ms |
-| stories110M | 110M | 12 | 768 | 512 | **229 tok/s** | 4.37 ms |
-| stories110M | 110M | 12 | 768 | 1,023 | **203 tok/s** | 4.93 ms |
+**CPU:** AMD Ryzen 5 5600X (6 physical cores)  
+**GPU:** NVIDIA GeForce RTX 2070 (8 GB, Turing)
 
-### GPU Benchmarks (RTX 2070, 8GB)
+## 🧠 Architecture
+Token ID → Embedding Lookup
+↓
+┌─── × N Layers ───────────────────┐
+│ RMSNorm → Q/K/V Projections │
+│ → RoPE (Rotary Embeddings)│
+│ → KV Cache │
+│ → Multi-Head Attention │
+│ → Output Projection (Wo) │
+│ → + Residual │
+│ RMSNorm → FFN (SwiGLU) │
+│ → w1(gate), w3(up) │
+│ → silu(gate) * up │
+│ → w2(down) │
+│ → + Residual │
+└──────────────────────────────────┘
+↓
+RMSNorm Final → LM Head → Argmax → Next Token
 
-| Kernel | Latência |
-|:---|:---|
-| RMSNorm | 6.6 μs |
-| RoPE | 5.1 μs |
-| SiLU (SwiGLU) | 4.7 μs |
-| **Total por camada** | **~16.4 μs** |
-| **Throughput estimado** | **~10,000 tok/s** (kernels only) |
+text
 
-### GPU Benchmarks (RTX 2070, cuBLAS + Tensor Cores)
 
-| Backend | Throughput | Latência/token | Speedup |
-|:---|:---|:---|:---|
-| CPU (Ryzen 5600X) | ~2,700 tok/s | 0.37 ms | 1.0x |
-| **GPU (RTX 2070)** | **~6,700 tok/s** | **0.15 ms** | **2.5x** |
+### CPU Backend (C++17)
+- **INT8 Quantization (W8A32):** 75% reduction in memory bandwidth.
+- **AVX2/FMA Micro-kernel:** Hand‑written `vpmaddubsw` chain for s8×s8
+  dot products.
+- **Zero-Allocation Hot Path:** Pre‑allocated RunState buffers eliminate
+  `malloc`/`free` during inference.
+- **FlashAttention‑style Tiled Attention:** Online softmax with dynamic
+  tile sizes (32/64), skip‑correction, and 2× unroll.
+- **Pre‑computed RoPE Tables:** O(1) lookup instead of per‑token trig.
+- **Redundant Quantization Elimination:** Single quantization per input
+  shared across multiple projections.
+- **Physical Core Pinning:** Only physical cores used to avoid SMT
+  contention.
+- **Adaptive OpenMP:** Parallelism activated only for matrices with
+  N≥512.
 
-> **Nota:** Benchmark com pesos simulados (FP32). Integração completa com cuBLAS GEMM 
-> e Tensor Cores (CUBLAS_TENSOR_OP_MATH). Próximo: FP16 weights para 2x adicional.
-
-> **Nota:** Estes números são apenas dos kernels customizados (RMSNorm, RoPE, SiLU). 
-> A integração completa com cuBLAS para as projeções Q/K/V/FFN está em desenvolvimento.
-
-## 🛠️ Optimizations Implemented
-
-### Compute
-- **INT8 Quantization (W8A32):** 75% reduction in memory bandwidth
-  and cache footprint via block-wise quantization (QK=32).
-- **AVX2/FMA Micro-kernel:** Hand-written SIMD intrinsics for
-  256-bit vectorized INT8 GEMV with `vpmaddubsw` instruction chain
-  using `abs/sign` trick to handle u8×s8 type constraints.
-- **2x Loop Unrolling:** Dual accumulators to exploit Instruction-Level
-  Parallelism (ILP) on Zen 3 micro-architecture.
-
-### Memory
-- **Zero-Allocation Hot Path:** Pre-allocated RunState buffers
-  eliminate all `malloc`/`free` calls during autoregressive inference,
-  preventing cache pollution and page faults.
-- **L3 Cache Residency:** Working set optimized to fit entirely within
-  the 32MB L3 cache, eliminating the DRAM bandwidth bottleneck.
-- **Redundant Quantization Elimination:** Input vectors shared across
-  projections (Q/K/V and Gate/Up) are quantized once and reused,
-  reducing dynamic quantization calls by 57%.
-
-### Attention
-- **AVX2 Dot Product:** Vectorized Q·Kᵀ and Score×V operations with
-  FMA, replacing scalar loops in the attention mechanism.
-- **Pre-computed RoPE Tables:** Rotary Position Embeddings use O(1)
-  lookup tables instead of computing `powf`/`cosf`/`sinf` per token.
-- **KV-Cache:** O(n) autoregressive inference with cached Key/Value
-  states.
-
-### Threading
-- **Physical Core Pinning:** Automatic detection of physical vs
-  logical cores, using only physical cores to avoid SMT contention.
-- **Adaptive OpenMP:** Dynamic threshold (N≥512) activates
-  parallelism only for large matrix operations (FFN, LM Head),
-  avoiding thread synchronization overhead on small matrices.
+### GPU Backend (CUDA)
+- **FP16 Precision:** Weights and activations in half‑precision.
+- **Tensor Cores (Turing):** All matrix multiplications use
+  `cublasGemmEx` with `CUBLAS_COMPUTE_32F_FAST_16F`.
+- **Custom CUDA Kernels:** RMSNorm, RoPE, SwiGLU, residual, attention
+  scores/softmax/score×V.
+- **Full Inference on GPU:** Only logits transferred to host for
+  sampling.
 
 ## 📦 Project Structure
-src/
-├── tensor_int8.h # INT8 block quantization types
-├── model.h # Model, RunState, KVCache definitions
-├── matmul_blocked.h/cpp # AVX2 INT8 GEMV micro-kernel
-├── layers.h/cpp # Transformer layers (Attention, FFN, RMSNorm)
-├── quantize.cpp # AVX2-vectorized dynamic quantization
-├── model.cpp # Weight loader (llama2.c format)
-└── main.cpp # Inference loop with Prefill/Decode separation
+mini-llm-inference-engine/
+├── src/
+│ ├── tensor_int8.h # INT8 block quantization types
+│ ├── model.h # Model, RunState, KVCache definitions
+│ ├── matmul_blocked.h/cpp # AVX2 INT8 GEMV micro‑kernel
+│ ├── layers.h/cpp # Transformer layers (CPU)
+│ ├── quantize.cpp # AVX2‑vectorized dynamic quantization
+│ ├── model.cpp # Weight loader (llama2.c format)
+│ ├── main.cpp # Inference loop (CPU)
+│ ├── cuda_llm_fp16.cu # Complete GPU backend
+│ └── cuda_benchmark.cu # Synthetic CUDA kernel benchmarks
+├── models/ # Pre‑trained models (llama2.c format)
+├── README.md
+└── Makefile / build scripts
 
 text
 
 
 ## ⚙️ Build & Run
 
+### CPU Backend
 ```bash
-# Build
 g++ -std=c++17 -O3 -march=native -mavx2 -mfma -fopenmp \
     src/quantize.cpp src/matmul_blocked.cpp src/layers.cpp \
     src/model.cpp src/main.cpp \
     -I./src -o mini_llm
 
-# Run
-./mini_llm models/stories15M.bin
-📊 Architecture
-text
+./mini_llm models/stories15M.bin 100
+GPU Backend (requires CUDA Toolkit 12.x)
+Bash
 
-Input Token
-    │
-    ▼
-[Embedding Lookup]
-    │
-    ▼
-┌──────────────────────── × N Layers ─┐
-│  [RMSNorm] ──► [Multi-Head Attention]│
-│       │              │               │
-│       │    ┌─────────┘               │
-│       │    │  Q·Kᵀ (AVX2 dot)       │
-│       │    │  Softmax                │
-│       │    │  Score×V (AVX2 FMA)     │
-│       │    │  Output Proj (Wo)       │
-│       │    └─────────┐               │
-│       └── + Residual ◄               │
-│              │                       │
-│       [RMSNorm] ──► [FFN SwiGLU]    │
-│              │         │             │
-│              └── + Residual ◄        │
-└──────────────────────────────────────┘
-    │
-    ▼
-[RMSNorm] ──► [LM Head] ──► Argmax ──► Next Token
-🔮 Roadmap
- FlashAttention-style Tiled Attention (CPU)
- CUDA port with Shared Memory Tiling
- Fused RMSNorm + RoPE CUDA kernel
- Tensor Core (WMMA) INT8 GEMM
- Tokenizer integration for interactive generation
+nvcc -std=c++17 -O3 -arch=sm_75 -ccbin /usr/bin/g++-12 \
+    -I./src \
+    src/cuda_llm_fp16.cu src/model.cpp \
+    -lcublas -o cuda_llm
+
+./cuda_llm models/stories110M.bin 512
+🧪 Benchmarks
+All benchmarks use greedy decoding and INT8 (CPU) or FP16 (GPU)
+quantization.
+
+Model	Parameters	Layers	Dim	CPU tok/s	GPU tok/s	Speedup
+stories15M	15M	6	288	2,730	—	—
+stories42M	42M	8	512	685	—	—
+stories110M	110M	12	768	246	1,740	7.1×
+🔬 Key Optimizations
+CPU: INT8 → AVX2 maddubs chain → 60% throughput gain.
+CPU: Tiled Attention with online softmax → up to 10% speedup on
+long sequences.
+GPU: FP16 + Tensor Cores → 7.1× faster than CPU on 110M model.
+GPU: cuBLAS GEMM for all projections, custom kernels for
+element‑wise ops.
+🚧 Ongoing Work
+Fused CUDA kernels (RMSNorm+QKV, RoPE+Attention) — experimental, not
+yet beating cuBLAS for small dims.
+FlashAttention‑2 style Shared Memory Tiling on GPU.
+Batch inference for serving scenarios.
+📝 License
+MIT
