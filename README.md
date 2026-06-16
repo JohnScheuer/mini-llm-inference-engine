@@ -26,6 +26,16 @@ All benchmarks: AMD Ryzen 5 5600X (6 physical cores), INT8 W8A32, greedy decodin
 | **Total por camada** | **~16.4 μs** |
 | **Throughput estimado** | **~10,000 tok/s** (kernels only) |
 
+### GPU Benchmarks (RTX 2070, cuBLAS + Tensor Cores)
+
+| Backend | Throughput | Latência/token | Speedup |
+|:---|:---|:---|:---|
+| CPU (Ryzen 5600X) | ~2,700 tok/s | 0.37 ms | 1.0x |
+| **GPU (RTX 2070)** | **~6,700 tok/s** | **0.15 ms** | **2.5x** |
+
+> **Nota:** Benchmark com pesos simulados (FP32). Integração completa com cuBLAS GEMM 
+> e Tensor Cores (CUBLAS_TENSOR_OP_MATH). Próximo: FP16 weights para 2x adicional.
+
 > **Nota:** Estes números são apenas dos kernels customizados (RMSNorm, RoPE, SiLU). 
 > A integração completa com cuBLAS para as projeções Q/K/V/FFN está em desenvolvimento.
 
