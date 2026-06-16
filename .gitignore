@@ -2,12 +2,26 @@
 mini_llm
 mini_llm_final
 gen_test
+cuda_*
 *.o
+*.out
 
 # Modelos (muito grandes para o git)
 *.bin
+
+# Pacotes CUDA/WSL
+*.deb
 
 # Pastas de Build
 build/
 .vscode/
 .idea/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Logs e temporários
+*.log
+*.tmp
