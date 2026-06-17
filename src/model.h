@@ -1,3 +1,4 @@
+// model.h
 #ifndef MODEL_H
 #define MODEL_H
 
@@ -42,56 +43,6 @@ struct Model {
     Tensor norm_final;
     Tensor lm_head;
 };
-
-struct RunState {
-    std::vector<float> x;
-    std::vector<float> xb;
-    std::vector<float> q, k, v;
-    std::vector<float> attn_out;
-    std::vector<float> ffn_g;
-    std::vector<float> ffn_u;
-    std::vector<float> ffn_out;
-    std::vector<float> logits;
-    std::vector<float> scores;
-    std::vector<BlockQ8_0> xq;
-    std::vector<float> rope_cos;
-    std::vector<float> rope_sin;
-};
-
-inline void init_run_state(RunState& s, const Model& m) {
-    int dim = m.dim;
-    int hidden_dim = m.hidden_dim;
-
-    s.x.resize(dim);
-    s.xb.resize(dim);
-    s.q.resize(dim);
-    s.k.resize(dim);
-    s.v.resize(dim);
-    s.attn_out.resize(dim);
-    s.ffn_g.resize(hidden_dim);
-    s.ffn_u.resize(hidden_dim);
-    s.ffn_out.resize(dim);
-    s.logits.resize(m.vocab_size);
-    s.scores.resize(m.max_seq_len * m.n_heads);
-
-    int max_dim = (dim > hidden_dim) ? dim : hidden_dim;
-    s.xq.resize(max_dim / QK8_0 + 1);
-
-    s.rope_cos.resize(m.max_seq_len * dim);
-    s.rope_sin.resize(m.max_seq_len * dim);
-    for (int pos = 0; pos < m.max_seq_len; pos++) {
-        for (int i = 0; i < dim; i += 2) {
-            float freq = 1.0f / powf(10000.0f, (float)i / dim);
-            float val = (float)pos * freq;
-            float cv = cosf(val);
-            float sv = sinf(val);
-            s.rope_cos[pos * dim + i]     = cv;
-            s.rope_sin[pos * dim + i]     = sv;
-            s.rope_cos[pos * dim + i + 1] = cv;
-            s.rope_sin[pos * dim + i + 1] = sv;
-        }
-    }
-}
 
 bool load_model_weights(Model& model, const std::string& path);
 

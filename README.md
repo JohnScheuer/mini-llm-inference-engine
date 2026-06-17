@@ -115,10 +115,11 @@ GPU: FP16 + Tensor Cores → 7.1× faster than CPU on 110M model.
 GPU: cuBLAS GEMM for all projections, custom kernels for
 element‑wise ops.
 🚧 Ongoing Work
-Fused CUDA kernels (RMSNorm+QKV, RoPE+Attention) — experimental, not
-yet beating cuBLAS for small dims.
-FlashAttention‑2 style Shared Memory Tiling on GPU.
-Batch inference for serving scenarios.
+## 🔬 Experimental: INT8 Mixed Precision
+Validamos a GEMM INT8 pura via cuBLAS (até 3200 GFLOPS na RTX 2070).
+A integração com ativações FP16 foi implementada, mas enfrenta 
+`CUBLAS_STATUS_INVALID_VALUE` no ambiente WSL2. Testes em Linux nativo
+são necessários para conclusão. Os fontes estão em `cuda_llm_int8_mixed.cu`.
 📝 License
 MIT
 
