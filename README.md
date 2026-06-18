@@ -9,22 +9,23 @@ A from‑scratch Transformer inference runtime written in modern C++ and CUDA, o
 - ✅ True batched decode inference
 - ✅ Adaptive dynamic micro‑batching
 - ✅ CUDA Graph launch optimization
+- ✅ Production-style serving simulation
 
-This project demonstrates real hardware saturation and serving‑level inference performance.
+This project demonstrates real hardware saturation and system-level serving behavior.
 
 ---
 
-# 📌 System Configuration
+# 📌 Hardware & Environment
 
-**GPU:** NVIDIA RTX 2070 (SM 7.5)  
-**CUDA:** 13.2  
+**GPU:** NVIDIA RTX 2070 (SM 7.5 – Turing)  
+**CUDA:** 13.x  
 **Precision:** FP16 (Tensor Cores)  
 **Model Tested:** Stories110M (110M parameters)  
 **Max Sequence Length:** 1024  
 
 ---
 
-# ⚡ Performance Results
+# ⚡ Performance Overview
 
 ## 🔹 CPU Backend (INT8 AVX2)
 
@@ -36,16 +37,14 @@ This project demonstrates real hardware saturation and serving‑level inference
 
 ## 🔹 GPU Backend (FP16 Tensor Cores)
 
-### Batch Scaling – Stories110M
+### Static Batch Scaling – Stories110M
 
 | Batch Size | Throughput (tok/s) |
 |------------|--------------------|
 | 1          | ~600 |
 | 16         | ~3,700 |
 | 64         | ~11,851 |
-| 96         | ~16,141 |
 | 128        | ~17,846 |
-| 160        | ~19,799 |
 | 192        | ~22,859 |
 | 256        | ~24,483 |
 | 320        | ~27,833 |
@@ -53,20 +52,42 @@ This project demonstrates real hardware saturation and serving‑level inference
 | 416        | ~28,852 |
 | 448        | ~27,553 |
 
-Peak throughput occurs near **Batch ≈ 384**, representing full Tensor Core saturation.
+Peak throughput observed near **Batch ≈ 384**, representing near-full Tensor Core saturation.
 
 ---
 
 # 🔁 Adaptive Dynamic Micro‑Batching
 
-Simulated serving workload with 1000 concurrent requests:
+Simulated serving workload using Poisson arrivals:
 
-| Mode | Throughput |
-|------|------------|
-| Static Batch=192 | ~22,859 tok/s |
-| Adaptive Dynamic | **~24,482 tok/s** |
+| Arrival Rate | Sustained Throughput |
+|--------------|----------------------|
+| 1000 req/s | ~19k tok/s |
+| 2000 req/s | ~28k tok/s |
+| 2300 req/s | ~30k tok/s |
+| 2500 req/s | ~32k tok/s |
+| 2600 req/s | ~32k tok/s (Overload begins) |
 
-Adaptive scheduler maintains ~82–85% of peak static throughput while supporting dynamic request completion.
+---
+
+# 📈 Tail Latency Analysis (Stories110M)
+
+At 2300 req/s:
+
+- ✅ P50: ~76 ms
+- ✅ P95: ~129 ms
+- ✅ P99: ~134 ms
+
+At 2600 req/s:
+
+- ⚠️ P99: ~198 ms
+- ⚠️ Latency growth indicates saturation
+
+The sustainable request rate is approximately:
+
+**~2400–2500 req/s**
+
+Beyond this point, queue latency grows rapidly.
 
 ---
 
@@ -83,34 +104,39 @@ Reduced kernel launches and improved Tensor Core utilization.
 - No CPU loop per sequence
 - Full GPU parallelism
 
-## ✅ CUDA Graph Integration
-Reduced launch overhead in dynamic serving mode.
-
 ## ✅ Continuous Scheduler
 - Slot reuse
-- Micro-batch adaptation
-- Dynamic workload balancing
+- Adaptive micro-batching
+- Poisson arrival simulation
+- Stable under load
+
+## ✅ CUDA Graph Integration
+Reduces launch overhead under high concurrency.
 
 ---
 
-# 📈 Scaling Behavior
+# 📊 System Behavior
 
-- Throughput scales near-linearly until GPU saturation.
-- Peak performance observed at Batch ≈ 384.
-- Beyond saturation, memory bandwidth and scheduler contention reduce efficiency.
+The runtime exhibits three regimes:
+
+### 🟢 Underloaded
+Low arrival rate, minimal queue latency.
+
+### 🟡 Saturated (Optimal)
+GPU fully utilized, high throughput, stable latency.
+
+### 🔴 Overloaded
+Arrival rate exceeds service capacity, queue latency grows.
 
 ---
 
-# 🎯 CPU vs GPU Comparison
+# 🎯 Key Results
 
-| Backend | Batch | Throughput |
-|----------|--------|-------------|
-| CPU INT8 | 1 | ~228 tok/s |
-| GPU FP16 | 1 | ~600 tok/s |
-| GPU FP16 | 384 | ~29,650 tok/s |
-| GPU FP16 Dynamic | ~192 | ~24,482 tok/s |
-
-GPU provides **~130× throughput improvement over CPU** at optimal batch.
+- ~130× speedup vs CPU at optimal batch
+- ~29k tok/s peak throughput
+- ~32k tok/s sustained under heavy load
+- Sustainable serving capacity ~2400 req/s
+- Full GPU hardware saturation confirmed
 
 ---
 
@@ -118,13 +144,14 @@ GPU provides **~130× throughput improvement over CPU** at optimal batch.
 
 This project demonstrates:
 
-- Practical GPU saturation analysis
-- Tensor Core utilization strategies
+- Practical Tensor Core saturation
+- Real dynamic serving architecture
 - Batch scaling characterization
-- Dynamic serving architecture
-- Hardware limit discovery on RTX 2070
+- Capacity planning under load
+- Tail latency analysis
+- Hardware limit discovery
 
-The runtime approaches the physical throughput limit of the GPU for this workload.
+The runtime approaches the physical throughput limit of RTX 2070 for this workload.
 
 ---
 
