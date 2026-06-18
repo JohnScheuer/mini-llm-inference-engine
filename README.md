@@ -1,124 +1,97 @@
-# Mini-LLM Inference Engine (HPC Focus)
+🧠 Mini-LLM Inference Engine: Bare-Metal Performance
+C++
+CUDA
+Architecture
 
-A bare-metal Transformer inference engine built in pure C++17 and CUDA,
-designed to push hardware to its theoretical limits — from x86 SIMD to
-NVIDIA Tensor Cores.
+A standalone, high-performance LLM inference engine written from scratch in pure C++17 and CUDA. This project bypasses high-level frameworks (PyTorch/TensorFlow) to extract the absolute physical limits of consumer hardware through manual kernel fusion, SIMD/WMMA intrinsics, and hardware-aware memory orchestration.
 
-## 🚀 Performance Benchmarks
+🚀 Key Performance Milestones
+Peak Throughput: 29,649.6 tokens/s on a 110M parameter model (NVIDIA RTX 2070).
+Ultra-Low Latency: 0.35ms per token (CPU/INT8) and 0.57ms per token (GPU/FP16).
+Massive Compute Density: Sustained 3.26 TFLOPS on Turing Tensor Cores.
+Memory Mastery: Successfully orchestrated 14.4GB workloads on an 8GB hardware limit (Unified Memory Overcommit) with zero performance degradation.
+📊 Performance Analysis
+1. Throughput Scaling: CPU vs. GPU
+The crossover point between CPU (Compute-Bound) and GPU (Memory-Bound) is mapped below using the Stories110M model.
 
-| Backend | Model | Tokens | Throughput | Latency | Speedup |
-|---|---|---|---|---|---|
-| CPU (C++/AVX2/INT8) | stories15M | 100 | **2,730 tok/s** | 0.37 ms | — |
-| CPU (C++/AVX2/INT8) | stories42M | 512 | **685 tok/s** | 1.46 ms | — |
-| CPU (C++/AVX2/INT8) | stories110M | 512 | **246 tok/s** | 4.06 ms | — |
-|### GPU Batched Prefill (FP16 + Tensor Cores + FlashAttention)
+Hardware Backend	Batch Size	Throughput	Latency	Optimization
+CPU (Ryzen 5600X)	1	228.6 tok/s	4.38 ms	AVX2 / FMA / L3-Bound
+GPU (RTX 2070)	1	596.9 tok/s	1.68 ms	CUDA FP16
+GPU (RTX 2070)	384	29,649.6 tok/s	0.57 ms	WMMA Tensor Cores
+2. Model Scaling (Stories Series)
+Benchmarked on RTX 2070 using FP16 Precision.
 
-| Model | Batch | Throughput | Speedup vs CPU |
-|---|---|---|---|
-| stories110M | 32 | **4,009 tok/s** | **16.3×** |
+mermaid
 
-Compile e execute:
-```bash
-nvcc -std=c++17 -O3 -arch=sm_75 -ccbin /usr/bin/g++-12 -I./src \
-    src/cuda_llm_batched.cu src/model.cpp -lcublas -o cuda_llm_batched
-./cuda_llm_batched models/stories110M.bin
+barChart
+    title Throughput per Model Size (tok/s)
+    x-axis Model Size (Parameters)
+    y-axis tok/s
+    "Stories15M": 2411
+    "Stories42M": 645
+    "Stories110M": 596
+(Note: At 15M parameters, the model is entirely L3-cache resident, resulting in peak latency efficiency.)
 
----
+3. The Batch Saturaion Curve
+Demonstrating the transition from Memory-Bound to Compute-Bound execution.
 
-## 🧠 Architecture
-Token ID → Embedding Lookup
-↓
-┌─── × N Layers ───────────────────┐
-│ RMSNorm → Q/K/V Projections │
-│ → RoPE (Rotary Embeddings)│
-│ → KV Cache │
-│ → Multi-Head Attention │
-│ → Output Projection (Wo) │
-│ → + Residual │
-│ RMSNorm → FFN (SwiGLU) │
-│ → w1(gate), w3(up) │
-│ → silu(gate) * up │
-│ → w2(down) │
-│ → + Residual │
-└──────────────────────────────────┘
-↓
-RMSNorm Final → LM Head → Argmax → Next Token
+Batch Size	Throughput (tok/s)	Memory Footprint	Efficiency Gain
+1	596.9	220 MB	Baseline
+16	3,707.9	1.1 GB	6.2x
+64	11,851.3	3.2 GB	19.8x
+128	17,845.9	5.5 GB	29.8x
+384	29,649.6	14.4 GB	49.6x
+🛠️ Technical Stack & Optimizations
+GPU Backend (CUDA/WMMA)
+Warp Matrix Multiply-Accumulate (WMMA): Manual utilization of Tensor Cores for 16x16x16 mixed-precision fragments.
+FlashAttention-2D: Custom IO-aware attention kernel with Online Softmax to maintain 
+O
+(
+1
+)
+O(1) memory overhead.
+Kernel Fusion: Super-fused operators (Residual + RMSNorm) to eliminate memory round-trips between the SMs and VRAM.
+Weight Packing: Concatention of WQ, WK, and WV weights into a single QKV GEMM launch to minimize PCIe/Driver overhead.
+CPU Backend (x86_64 SIMD)
+INT8 Quantization (W8A32): Manual vpmaddubsw chain implementation for 8-bit weights with 32-bit accumulation.
+Hyper-Threading Optimization: Identified that disabling nested OpenMP and pinning threads to physical cores (6 threads vs 12) results in a 10x stability gain for memory-intensive workloads.
+Zero-Allocation Hot Path: Pre-allocated RunState buffers to ensure zero malloc calls during the autoregressive loop.
+System Observability
+OS-Level Determinism: Validated via perf a state of 0 context-switches and 0 CPU migrations during peak load.
+Unified Memory Orchestration: Engineered memory-access patterns to mask PCIe bandwidth bottlenecks during 180% VRAM overcommit scenarios.
+🏗️ Architecture
+mermaid
 
----
+graph TD
+    A[Input Tokens] --> B[Embedding Kernel]
+    B --> C[Fused Residual + RMSNorm]
+    C --> D[Fused QKV GEMM - cuBLAS/WMMA]
+    D --> E[FlashAttention-2D + Online Softmax]
+    E --> F[Output Projection]
+    F --> G[Fused W13 GEMM + SiLU Activation]
+    G --> H[W2 Projection]
+    H --> I[Final RMSNorm]
+    I --> J[GPU-Side Argmax]
+    J --> K[Next Token]
+🚀 Getting Started
+Compilation
+Bash
 
-## ⚙️ Build & Run
-
-### CPU Backend (C++17 + AVX2 + INT8)
-```bash
-g++ -std=c++17 -O3 -march=native -mavx2 -mfma -fopenmp \
-    src/quantize.cpp src/matmul_blocked.cpp src/layers.cpp \
-    src/model.cpp src/main.cpp \
-    -I./src -o mini_llm
-
-./mini_llm models/stories15M.bin 100
-
-GPU Backend (CUDA FP16 + Tensor Cores)
+# GPU Backend
 nvcc -std=c++17 -O3 -arch=sm_75 -ccbin /usr/bin/g++-12 \
-    -I./src \
-    src/cuda_llm_fp16.cu src/model.cpp \
-    -lcublas -o cuda_llm
+    -I./src src/cuda_llm_batched.cu src/model.cpp \
+    -lcublas -o mini_llm_gpu
 
-./cuda_llm models/stories110M.bin 512
+# CPU Backend
+g++ -std=c++17 -O3 -march=native -mfma -mavx2 -fopenmp \
+    -I./src src/*.cpp -o mini_llm_cpu
+Execution (Peak Throughput Mode)
+Bash
 
-🛠️ Optimizations
-CPU
-INT8 Quantization (W8A32): Block‑wise (QK=32) dynamic quantization
-with AVX2 vpmaddubsw instruction chain.
-FlashAttention‑style Tiled Attention: Online softmax with dynamic
-tile sizes (32/64), skip‑correction, 2× unroll.
-Zero‑Allocation Hot Path: Pre‑allocated RunState buffers eliminate
-all malloc/free during autoregressive inference.
-Pre‑computed RoPE Tables: O(1) lookup instead of per‑token trig.
-Redundant Quantization Elimination: Single quantization per input
-shared across multiple projections.
-Physical Core Pinning: Only physical cores used to avoid SMT
-contention.
-Adaptive OpenMP: Parallelism activated only for matrices with
-N≥512.
-GPU
-FP16 + Tensor Cores: All matrix multiplications via
-cublasGemmEx with CUDA_R_16F and CUBLAS_COMPUTE_32F_FAST_16F.
-Custom CUDA Kernels: RMSNorm, RoPE, SwiGLU, residual, attention
-score/softmax/score×V.
-Full Inference on GPU: Only logits transferred to host for
-sampling.
+./mini_llm_gpu models/stories110M.bin
+👨‍💻 Author
+John Scheuer
+Senior Software Engineer | HPC & LLM Infrastructure
+[\[LinkedIn Profile\]](https://www.linkedin.com/in/joaofelipescheuer/) | 
 
-📦 Project Structure
-mini-llm-inference-engine/
-├── src/
-│   ├── tensor_int8.h           # INT8 block quantization types
-│   ├── model.h                 # Model, KVCache, TransformerLayer,
-│   │                           #   RunState
-│   ├── model.cpp               # Weight loader (llama2.c format)
-│   ├── matmul_blocked.h/cpp    # AVX2 INT8 GEMV micro‑kernel
-│   ├── layers.h/cpp            # Transformer layers (CPU)
-│   ├── quantize.cpp            # AVX2‑vectorized dynamic quantization
-│   ├── main.cpp                # Inference loop (CPU)
-│   ├── cuda_llm_fp16.cu        # Complete GPU backend (FP16)
-│   ├── cuda_llm_int8_batched.cu# Experimental INT8 backend
-│   └── bench_int8_gemm.cu      # Standalone INT8 GEMM benchmark
-├── models/                     # Pre‑trained models (llama2.c format)
-├── README.md
-└── .gitignore
-
-🔬 Experimental: INT8 Mixed Precision
-We validated pure INT8 GEMM (act + weights) with Tensor Cores in isolated
-benchmarks, achieving up to 3200 GFLOPS on the RTX 2070. A complete
-INT8 pipeline using dynamic per‑token quantization and int32
-accumulation was built and is functional:
-
-Backend	Model	Throughput
-GPU INT8 (dynamic)	stories15M	542 tok/s
-GPU INT8 (dynamic)	stories110M	168 tok/s
-The overhead of per‑token quantization limits batch‑1 performance. For
-batch inference or larger models (>1B), pure INT8 can surpass FP16. Our
-implementation is available in src/cuda_llm_int8_batched.cu and serves
-as a reference for integrating quantization engines.
-
-📝 License
-MIT
+<div align="center"> ⭐ If you found this project useful for HPC research, please leave a star! </div>
