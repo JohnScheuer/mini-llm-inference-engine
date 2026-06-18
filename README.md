@@ -174,6 +174,12 @@ Arrival rate exceeds service capacity, queue latency grows.
 - Sustainable serving capacity ~2400 req/s
 - Full GPU hardware saturation confirmed
 
+## Current Status
+
+✅ Stable serving runtime (no memory corruption)
+✅ ~29–30k tok/s sustained
+⚠️ Flash attention kernel under reconstruction
+
 ---
 
 # 🏁 Conclusion
