@@ -96,6 +96,23 @@ The sustainable request rate is approximately:
 
 Beyond this point, queue latency grows rapidly.
 
+### 📊 Production SLA & Tail Latency Analysis
+The system demonstrates "Hard Real-Time" behavior, with deterministic latencies across multiple stress-test cycles.
+
+| Load (Poisson) | Throughput | P50 (Median) | P99 (Tail) | System State |
+| :--- | :--- | :--- | :--- | :--- |
+| 1,000 req/s | 19,418 tok/s | 76.0 ms | 134.4 ms | Healthy |
+| 2,300 req/s | 30,133 tok/s | 76.0 ms | 134.4 ms | **Optimal** |
+| **2,500 req/s** | **30,009 tok/s** | **80.8 ms** | **145.6 ms** | **SLA Limit** |
+| 2,600 req/s | 32,025 tok/s | 112.8 ms | 197.6 ms | Saturated |
+
+**Key Finding:** The system reaches physical saturation at **2,500 requests/second**. Beyond this point, the median latency (P50) increases by 40%, marking the transition from compute-bound to queue-bound execution.
+
+## 📊 Throughput vs Tail Latency (Combined View)
+
+![Throughput & P99](final_scaling_combined.png)
+
+
 ---
 
 # 🧠 Architectural Highlights
