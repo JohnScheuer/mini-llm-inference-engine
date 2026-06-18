@@ -13,6 +13,7 @@ A from‑scratch Transformer inference runtime written in modern C++ and CUDA, o
 
 This project demonstrates real hardware saturation and system-level serving behavior.
 
+
 ---
 
 # 📌 Hardware & Environment
@@ -26,6 +27,9 @@ This project demonstrates real hardware saturation and system-level serving beha
 ---
 
 # ⚡ Performance Overview
+## 📊 Throughput Scaling
+
+![Throughput vs Load](throughput_scaling_curve.png)
 
 ## 🔹 CPU Backend (INT8 AVX2)
 
@@ -71,6 +75,10 @@ Simulated serving workload using Poisson arrivals:
 ---
 
 # 📈 Tail Latency Analysis (Stories110M)
+
+## 📈 Tail Latency (P99)
+
+![P99 vs Load](p99_vs_req_rate.png)
 
 At 2300 req/s:
 
