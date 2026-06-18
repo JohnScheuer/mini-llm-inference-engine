@@ -78,7 +78,7 @@ Simulated serving workload using Poisson arrivals:
 
 ## 📈 Tail Latency (P99)
 
-![P99 vs Load](p99_vs_req_rate.png)
+![P99 vs Load](latency_scaling_curve.png)
 At 2300 req/s:
 
 - ✅ P50: ~76 ms
