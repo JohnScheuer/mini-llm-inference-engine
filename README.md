@@ -11,10 +11,17 @@ NVIDIA Tensor Cores.
 | CPU (C++/AVX2/INT8) | stories15M | 100 | **2,730 tok/s** | 0.37 ms | — |
 | CPU (C++/AVX2/INT8) | stories42M | 512 | **685 tok/s** | 1.46 ms | — |
 | CPU (C++/AVX2/INT8) | stories110M | 512 | **246 tok/s** | 4.06 ms | — |
-| **GPU FP16 (cuBLAS + TC)** | **stories110M** | **512** | **1,740 tok/s** | **0.57 ms** | **7.1×** |
+|### GPU Batched Prefill (FP16 + Tensor Cores + FlashAttention)
 
-**CPU:** AMD Ryzen 5 5600X (6 physical cores)  
-**GPU:** NVIDIA GeForce RTX 2070 (8 GB, Turing, SM 7.5)
+| Model | Batch | Throughput | Speedup vs CPU |
+|---|---|---|---|
+| stories110M | 32 | **4,009 tok/s** | **16.3×** |
+
+Compile e execute:
+```bash
+nvcc -std=c++17 -O3 -arch=sm_75 -ccbin /usr/bin/g++-12 -I./src \
+    src/cuda_llm_batched.cu src/model.cpp -lcublas -o cuda_llm_batched
+./cuda_llm_batched models/stories110M.bin
 
 ---
 
