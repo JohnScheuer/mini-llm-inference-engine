@@ -1,16 +1,15 @@
-// model.h
 #ifndef MODEL_H
 #define MODEL_H
 
-#include "tensor_int8.h"
+#include "tensor_int8.h" // Seus tensores INT8
 #include <vector>
 #include <string>
 #include <cmath>
 
+// Estruturas de suporte
 struct KVCache {
     std::vector<float> k_cache;
     std::vector<float> v_cache;
-
     KVCache() {}
     KVCache(int max_seq, int dim)
         : k_cache(max_seq * dim, 0.0f),
@@ -44,6 +43,12 @@ struct Model {
     Tensor lm_head;
 };
 
+// --- PROTÓTIPOS DE FUNÇÕES (Devem ficar abaixo das structs) ---
+
+// Função para carregar o binário original (opção 1)
 bool load_model_weights(Model& model, const std::string& path);
+
+// Função para carregar o Safetensors (opção 2 Hardcore)
+void load_safetensors(const std::string& path, Model& m);
 
 #endif
