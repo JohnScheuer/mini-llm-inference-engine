@@ -164,7 +164,7 @@ Roofline‑validated performance scaling
 Deterministic SLA under load
 The runtime approaches the physical throughput limits of an RTX 2070 for this workload.
 
-Author: John Scheuer
+Author: João Felipe De Souza
 
 
 📜 License
