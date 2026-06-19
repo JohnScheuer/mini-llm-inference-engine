@@ -112,6 +112,22 @@ The system demonstrates "Hard Real-Time" behavior, with deterministic latencies 
 
 ![Throughput & P99](final_scaling_combined.png)
 
+### 📊 Performance Analysis: Throughput Saturation & SLA Stability
+
+By leveraging **Multi-Bucket CUDA Graphs** and **Dual-Stream Async IO**, the engine achieves hardware saturation on the RTX 2070 while maintaining a deterministic tail latency (P99).
+
+<p align="center">
+  <img src="analysis/final_report_neon.png" width="800">
+</p>
+
+| Arrival Rate (Poisson) | Throughput (tok/s) | P99 Latency (SLA) | System State |
+|-------------------------|--------------------|-------------------|--------------|
+| 1000 req/s              | 16,481             | 134.4 ms          | Healthy      |
+| 2300 req/s              | 25,312             | 134.4 ms          | Optimal      |
+| 2600 req/s              | 26,584             | 134.4 ms          | Saturated    |
+
+**Key Insight:** The engine maintains a constant P99 latency regardless of load, proving that the **Bucketed Scheduler** and **Async IO** successfully eliminated system-level jitter.
+
 
 ## 📊 Scalability & Saturation Analysis (20,000 Request Marathon)
 
