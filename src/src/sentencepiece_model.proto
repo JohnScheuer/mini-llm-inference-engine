@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+message SentencePiece {
+  string piece = 1;
+  float score = 2;
+  int32 type = 3;
+}
+
+message ModelProto {
+  repeated SentencePiece pieces = 1;
+}
