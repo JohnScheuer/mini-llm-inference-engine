@@ -3,19 +3,19 @@
 
 #include <string>
 #include <vector>
-#include <sentencepiece_processor.h>
+#include <unordered_map>
 
 class Tokenizer {
 public:
     Tokenizer();
     ~Tokenizer();
-
     bool load(const std::string& path);
     std::vector<int> encode(const std::string& text) const;
     std::string decode(int prev_token, int token) const;
 
 private:
-    sentencepiece::SentencePieceProcessor processor;
+    std::unordered_map<std::string, int> vocab;
+    std::vector<std::string> inv_vocab;
 };
 
 #endif
