@@ -2,22 +2,28 @@
 #include <iostream>
 #include <cmath>
 #include <algorithm>
+
+#include <cuda_runtime.h>
+#include <cublas_v2.h>
+
 #include "model.h"
+
+#define BATCH 32
 
 //////////////////////////////////////////////////////////////
 // Estrutura Quantizada
 //////////////////////////////////////////////////////////////
 struct QuantizedMatrix {
-    std::vector<int8_t> weight;
+    std::vector<int8_t> weight;  // COL-MAJOR
     std::vector<float> scales;
     int out_dim;
     int in_dim;
 };
 
 //////////////////////////////////////////////////////////////
-// Quantização per-row
+// Quantização per-row armazenando COL-MAJOR
 //////////////////////////////////////////////////////////////
-QuantizedMatrix quantize_per_row(
+QuantizedMatrix quantize_per_row_col_major(
     const std::vector<float>& W,
     int out_dim,
     int in_dim)
@@ -46,7 +52,9 @@ QuantizedMatrix quantize_per_row(
         {
             int q = std::roundf(W[i*in_dim + j] / scale);
             q = std::max(-127, std::min(127, q));
-            qm.weight[i*in_dim + j] = (int8_t)q;
+
+            // COL-MAJOR
+            qm.weight[j*out_dim + i] = (int8_t)q;
         }
     }
 
@@ -54,287 +62,180 @@ QuantizedMatrix quantize_per_row(
 }
 
 //////////////////////////////////////////////////////////////
-// RoPE
-//////////////////////////////////////////////////////////////
-void apply_rope_layer(std::vector<float>& vec,
-                      int n_heads,
-                      int head_dim,
-                      int pos)
-{
-    for(int h=0; h<n_heads; h++) {
-        for(int i=0; i<head_dim/2; i++) {
-
-            int idx0 = h*head_dim + 2*i;
-            int idx1 = h*head_dim + 2*i + 1;
-
-            float theta = powf(10000.f, -2.f*i/head_dim);
-            float angle = pos * theta;
-
-            float c = cosf(angle);
-            float s = sinf(angle);
-
-            float v0 = vec[idx0];
-            float v1 = vec[idx1];
-
-            vec[idx0] = v0*c - v1*s;
-            vec[idx1] = v0*s + v1*c;
-        }
-    }
-}
-
-//////////////////////////////////////////////////////////////
-// SiLU
-//////////////////////////////////////////////////////////////
-void silu(std::vector<float>& x)
-{
-    for(auto& v : x)
-        v = v / (1.0f + expf(-v));
-}
-
-//////////////////////////////////////////////////////////////
 // MAIN
 //////////////////////////////////////////////////////////////
 int main(int argc, char** argv)
 {
-    std::cout << "--- [TRANSFORMER 100% PRE-QUANTIZADO] ---\n";
+    std::cout << "--- [INT8 GEMM VALIDATION] ---\n";
 
     if(argc < 2) {
-        std::cout << "Uso: ./tinyllama_int8 model.safetensors\n";
+        std::cout << "Uso: ./tinyllama_tc model.safetensors\n";
         return 0;
     }
 
+    // Inicialização completa
     Model m;
     m.dim = 2048;
     m.hidden_dim = 5632;
     m.n_layers = 22;
     m.n_heads = 32;
     m.vocab_size = 32000;
-
-    int n_kv_heads = 4;
-    int head_dim = m.dim / m.n_heads;
-    int kv_dim = n_kv_heads * head_dim;
-    int kv_mul = m.n_heads / n_kv_heads;
+    m.max_seq_len = 2048;
 
     m.layers.resize(m.n_layers);
 
     load_safetensors_improved(argv[1], m);
-    std::cout << "[Loader] ✓ Modelo carregado.\n";
+
+    cublasHandle_t handle;
+    cublasCreate(&handle);
 
     ////////////////////////////////////////////////////////////
-    // ✅ PRÉ‑QUANTIZAR TRANSFORMER INTEIRO
+    // Pré‑quantizar Wq col-major
     ////////////////////////////////////////////////////////////
 
-    std::vector<QuantizedMatrix> wq_layers(m.n_layers);
-    std::vector<QuantizedMatrix> wk_layers(m.n_layers);
-    std::vector<QuantizedMatrix> wv_layers(m.n_layers);
-    std::vector<QuantizedMatrix> wo_layers(m.n_layers);
-    std::vector<QuantizedMatrix> w1_layers(m.n_layers);
-    std::vector<QuantizedMatrix> w3_layers(m.n_layers);
-    std::vector<QuantizedMatrix> w2_layers(m.n_layers);
-
-    for(int l=0; l<m.n_layers; l++)
-    {
-        wq_layers[l] = quantize_per_row(m.layers[l].wq.data,
-                                        m.dim, m.dim);
-
-        wk_layers[l] = quantize_per_row(m.layers[l].wk.data,
-                                        kv_dim, m.dim);
-
-        wv_layers[l] = quantize_per_row(m.layers[l].wv.data,
-                                        kv_dim, m.dim);
-
-        wo_layers[l] = quantize_per_row(m.layers[l].wo.data,
-                                        m.dim, m.dim);
-
-        w1_layers[l] = quantize_per_row(m.layers[l].w1.data,
-                                        m.hidden_dim, m.dim);
-
-        w3_layers[l] = quantize_per_row(m.layers[l].w3.data,
-                                        m.hidden_dim, m.dim);
-
-        w2_layers[l] = quantize_per_row(m.layers[l].w2.data,
-                                        m.dim, m.hidden_dim);
-    }
+    auto wq = quantize_per_row_col_major(
+        m.layers[0].wq.data,
+        m.dim,
+        m.dim);
 
     ////////////////////////////////////////////////////////////
-    // Embedding
+    // Criar input normalizado
     ////////////////////////////////////////////////////////////
 
     int token = 15043;
 
-    std::vector<float> x_vec(m.dim);
+    std::vector<float> x(m.dim);
+
     for(int i=0;i<m.dim;i++)
-        x_vec[i] =
-            (float)m.token_embedding.data[token*m.dim + i];
+        x[i] = (float)m.token_embedding.data[token*m.dim + i];
+
+    float sum=0;
+    for(int i=0;i<m.dim;i++)
+        sum += x[i]*x[i];
+
+    float rms = 1.0f / sqrtf(sum/m.dim + 1e-5f);
+
+    std::vector<float> x_norm(m.dim);
+
+    for(int i=0;i<m.dim;i++)
+        x_norm[i] = x[i] * rms *
+                    (float)m.layers[0].norm_attn.data[i];
 
     ////////////////////////////////////////////////////////////
-    // Forward
+    // Quantizar ativação
     ////////////////////////////////////////////////////////////
 
-    for(int l=0; l<m.n_layers; l++)
+    float max_x = 0.f;
+    for(int i=0;i<m.dim;i++)
+        max_x = std::max(max_x, std::abs(x_norm[i]));
+
+    float scale_x = max_x / 127.f;
+    if(scale_x == 0.f) scale_x = 1e-8f;
+
+    std::vector<int8_t> x_int8(m.dim * BATCH);
+
+    for(int b=0;b<BATCH;b++)
     {
-        auto& layer = m.layers[l];
-        auto& wq = wq_layers[l];
-        auto& wk = wk_layers[l];
-        auto& wv = wv_layers[l];
-        auto& wo = wo_layers[l];
-        auto& w1q = w1_layers[l];
-        auto& w3q = w3_layers[l];
-        auto& w2q = w2_layers[l];
-
-        std::vector<float> residual1 = x_vec;
-
-        // RMSNorm Attn
-        std::vector<float> x_norm(m.dim);
-
-        float rsum=0;
         for(int i=0;i<m.dim;i++)
-            rsum+=x_vec[i]*x_vec[i];
-
-        float rms=1.0f/sqrtf(rsum/m.dim+1e-5f);
-
-        for(int i=0;i<m.dim;i++)
-            x_norm[i]=x_vec[i]*rms*
-                      (float)layer.norm_attn.data[i];
-
-        std::vector<float> q(m.dim,0.f);
-        std::vector<float> k(kv_dim,0.f);
-        std::vector<float> v(kv_dim,0.f);
-
-        // Q
-        for(int i=0;i<m.dim;i++){
-            float acc=0;
-            for(int j=0;j<m.dim;j++)
-                acc += (float)wq.weight[i*m.dim+j] *
-                       x_norm[j];
-            q[i]=acc*wq.scales[i];
+        {
+            int q = std::roundf(x_norm[i] / scale_x);
+            q = std::max(-127, std::min(127, q));
+            x_int8[i + b*m.dim] = (int8_t)q; // COL-MAJOR
         }
-
-        // K
-        for(int i=0;i<kv_dim;i++){
-            float acc=0;
-            for(int j=0;j<m.dim;j++)
-                acc += (float)wk.weight[i*m.dim+j] *
-                       x_norm[j];
-            k[i]=acc*wk.scales[i];
-        }
-
-        // V
-        for(int i=0;i<kv_dim;i++){
-            float acc=0;
-            for(int j=0;j<m.dim;j++)
-                acc += (float)wv.weight[i*m.dim+j] *
-                       x_norm[j];
-            v[i]=acc*wv.scales[i];
-        }
-
-        apply_rope_layer(q,m.n_heads,head_dim,l);
-        apply_rope_layer(k,n_kv_heads,head_dim,l);
-
-        std::vector<float> attn_out(m.dim);
-
-        for(int h=0;h<m.n_heads;h++){
-            int kv_h=h/kv_mul;
-            for(int d=0;d<head_dim;d++)
-                attn_out[h*head_dim+d]=
-                    v[kv_h*head_dim+d];
-        }
-
-        // Wo
-        std::vector<float> o_proj(m.dim,0.f);
-
-        for(int i=0;i<m.dim;i++){
-            float acc=0;
-            for(int j=0;j<m.dim;j++)
-                acc += (float)wo.weight[i*m.dim+j] *
-                       attn_out[j];
-            o_proj[i]=acc*wo.scales[i];
-        }
-
-        for(int i=0;i<m.dim;i++)
-            x_vec[i]=residual1[i]+o_proj[i];
-
-        ////////////////////////////////////////////////////////////
-        // ✅ FFN 100% PRÉ‑QUANTIZADO
-        ////////////////////////////////////////////////////////////
-
-        std::vector<float> residual2=x_vec;
-        std::vector<float> x_norm2(m.dim);
-
-        float s2=0;
-        for(int i=0;i<m.dim;i++)
-            s2+=x_vec[i]*x_vec[i];
-
-        float rms2=1.0f/sqrtf(s2/m.dim+1e-5f);
-
-        for(int i=0;i<m.dim;i++)
-            x_norm2[i]=x_vec[i]*rms2*
-                       (float)layer.norm_ffn.data[i];
-
-        std::vector<float> w1(m.hidden_dim,0.f);
-        std::vector<float> w3(m.hidden_dim,0.f);
-
-        for(int i=0;i<m.hidden_dim;i++){
-            float acc1=0;
-            float acc3=0;
-
-            for(int j=0;j<m.dim;j++){
-                acc1 += (float)w1q.weight[i*m.dim+j] *
-                        x_norm2[j];
-                acc3 += (float)w3q.weight[i*m.dim+j] *
-                        x_norm2[j];
-            }
-
-            w1[i]=acc1*w1q.scales[i];
-            w3[i]=acc3*w3q.scales[i];
-        }
-
-        silu(w1);
-
-        for(int i=0;i<m.hidden_dim;i++)
-            w1[i]*=w3[i];
-
-        std::vector<float> w2_out(m.dim,0.f);
-
-        for(int i=0;i<m.dim;i++){
-            float acc=0;
-            for(int j=0;j<m.hidden_dim;j++)
-                acc += (float)w2q.weight[i*m.hidden_dim+j] *
-                       w1[j];
-            w2_out[i]=acc*w2q.scales[i];
-        }
-
-        for(int i=0;i<m.dim;i++)
-            x_vec[i]=residual2[i]+w2_out[i];
-
-        if(l==0)
-            std::cout<<"[DEBUG] L0 x[0]: "<<x_vec[0]<<std::endl;
     }
 
     ////////////////////////////////////////////////////////////
-    // Final Norm + Logits
+    // ✅ CPU COL-MAJOR REFERÊNCIA
     ////////////////////////////////////////////////////////////
 
-    float fs=0;
-    for(int i=0;i<m.dim;i++)
-        fs+=x_vec[i]*x_vec[i];
+    int32_t acc_cpu = 0;
 
-    float frms=1.0f/sqrtf(fs/m.dim+1e-5f);
-
-    for(int i=0;i<m.dim;i++)
-        x_vec[i]=x_vec[i]*frms*
-                 (float)m.norm_final.data[i];
-
-    std::cout<<"\nPrimeiros 10 Logits:\n";
-
-    for(int i=0;i<10;i++){
-        float logit=0;
-        for(int j=0;j<m.dim;j++)
-            logit+=m.lm_head.data[i*m.dim+j]*x_vec[j];
-        std::cout<<logit<<" ";
+    for(int j=0; j<m.dim; j++)
+    {
+        int8_t w = wq.weight[j*m.dim + 0]; // col-major
+        int8_t xv = x_int8[j];             // primeira coluna
+        acc_cpu += (int32_t)w * (int32_t)xv;
     }
 
-    std::cout<<std::endl;
+    float q_cpu =
+        acc_cpu *
+        wq.scales[0] *
+        scale_x;
+
+    std::cout << "[DEBUG] CPU col-major q[0]: "
+              << q_cpu << std::endl;
+
+    ////////////////////////////////////////////////////////////
+    // GPU
+    ////////////////////////////////////////////////////////////
+
+    int8_t* d_W;
+    int8_t* d_X;
+    int32_t* d_Y;
+
+    cudaMalloc(&d_W, m.dim*m.dim*sizeof(int8_t));
+    cudaMalloc(&d_X, m.dim*BATCH*sizeof(int8_t));
+    cudaMalloc(&d_Y, m.dim*BATCH*sizeof(int32_t));
+
+    cudaMemcpy(d_W,
+               wq.weight.data(),
+               m.dim*m.dim*sizeof(int8_t),
+               cudaMemcpyHostToDevice);
+
+    cudaMemcpy(d_X,
+               x_int8.data(),
+               m.dim*BATCH*sizeof(int8_t),
+               cudaMemcpyHostToDevice);
+
+    int M = m.dim;
+    int N = BATCH;
+    int K = m.dim;
+
+    int32_t alpha = 1;
+    int32_t beta  = 0;
+
+    cublasGemmEx(handle,
+                 CUBLAS_OP_N,
+                 CUBLAS_OP_N,
+                 M,
+                 N,
+                 K,
+                 &alpha,
+                 d_W,
+                 CUDA_R_8I,
+                 M,
+                 d_X,
+                 CUDA_R_8I,
+                 K,
+                 &beta,
+                 d_Y,
+                 CUDA_R_32I,
+                 M,
+                 CUBLAS_COMPUTE_32I,
+                 CUBLAS_GEMM_DEFAULT);
+
+    cudaDeviceSynchronize();
+
+    std::vector<int32_t> y_int32(m.dim * BATCH);
+
+    cudaMemcpy(y_int32.data(),
+               d_Y,
+               m.dim*BATCH*sizeof(int32_t),
+               cudaMemcpyDeviceToHost);
+
+    float q_gpu =
+        y_int32[0] *
+        wq.scales[0] *
+        scale_x;
+
+    std::cout << "[DEBUG] GPU q[0]: "
+              << q_gpu << std::endl;
+
+    cudaFree(d_W);
+    cudaFree(d_X);
+    cudaFree(d_Y);
+
+    cublasDestroy(handle);
 
     return 0;
 }
