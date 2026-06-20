@@ -1,7 +1,12 @@
-#include "model.h"
-#include <cstdio>
-#include <cstring>
 #include <iostream>
+#include <fstream>
+#include <vector>
+#include <cstring>
+#include <cuda_fp16.h>
+#include "json.hpp"
+#include "model.h"
+
+using json = nlohmann::json;
 
 bool load_model_weights(Model& model, const std::string& path) {
     FILE* f = fopen(path.c_str(), "rb");
@@ -74,4 +79,83 @@ bool load_model_weights(Model& model, const std::string& path) {
     fclose(f);
     std::cout << "[Model] Pesos carregados com sucesso!" << std::endl;
     return true;
+}
+void load_safetensors_improved(const std::string& path, Model& m)
+{
+    std::ifstream f(path, std::ios::binary);
+    if (!f) {
+        std::cerr << "Erro ao abrir Safetensors!" << std::endl;
+        exit(1);
+    }
+
+    uint64_t header_size;
+    f.read(reinterpret_cast<char*>(&header_size), 8);
+
+    std::string header_json(header_size, ' ');
+    f.read(&header_json[0], header_size);
+
+    json meta = json::parse(header_json);
+    uint64_t data_offset = 8 + header_size;
+
+    auto read_tensor = [&](const std::string& name) {
+        uint64_t start = meta[name]["data_offsets"][0];
+        uint64_t end   = meta[name]["data_offsets"][1];
+
+        f.seekg(data_offset + start);
+
+        size_t bytes = end - start;
+        std::vector<uint16_t> h(bytes / 2);
+        f.read(reinterpret_cast<char*>(h.data()), bytes);
+
+        std::vector<float> out(h.size());
+
+        std::string dtype = meta[name]["dtype"];
+
+        for (size_t i = 0; i < h.size(); i++)
+        {
+            if (dtype == "BF16")
+            {
+                uint32_t tmp = ((uint32_t)h[i]) << 16;
+                float val;
+                std::memcpy(&val, &tmp, sizeof(float));
+                out[i] = val;
+            }
+            else if (dtype == "F16")
+            {
+                __half hv;
+                std::memcpy(&hv, &h[i], sizeof(uint16_t));
+                out[i] = __half2float(hv);
+            }
+            else
+            {
+                std::cerr << "Unsupported dtype: " << dtype << std::endl;
+                exit(1);
+            }
+        }
+
+        return out;
+    };
+
+    m.token_embedding.data = read_tensor("model.embed_tokens.weight");
+
+    for (int i = 0; i < m.n_layers; i++)
+    {
+        std::string prefix = "model.layers." + std::to_string(i);
+
+        m.layers[i].norm_attn.data = read_tensor(prefix + ".input_layernorm.weight");
+        m.layers[i].wq.data = read_tensor(prefix + ".self_attn.q_proj.weight");
+        m.layers[i].wk.data = read_tensor(prefix + ".self_attn.k_proj.weight");
+        m.layers[i].wv.data = read_tensor(prefix + ".self_attn.v_proj.weight");
+        m.layers[i].wo.data = read_tensor(prefix + ".self_attn.o_proj.weight");
+
+        m.layers[i].norm_ffn.data = read_tensor(prefix + ".post_attention_layernorm.weight");
+        m.layers[i].w1.data = read_tensor(prefix + ".mlp.gate_proj.weight");
+        m.layers[i].w2.data = read_tensor(prefix + ".mlp.down_proj.weight");
+        m.layers[i].w3.data = read_tensor(prefix + ".mlp.up_proj.weight");
+    }
+
+    m.norm_final.data = read_tensor("model.norm.weight");
+    m.lm_head.data = read_tensor("lm_head.weight");
+
+    std::cout << "[Loader] ✓ Modelo carregado com sucesso!" << std::endl;
 }

@@ -51,4 +51,6 @@ bool load_model_weights(Model& model, const std::string& path);
 // Função para carregar o Safetensors (opção 2 Hardcore)
 void load_safetensors(const std::string& path, Model& m);
 
+void load_safetensors_improved(const std::string& path, Model& m);
+
 #endif
