@@ -9,59 +9,51 @@
 #include "model.h"
 
 //////////////////////////////////////////////////////////////
-// Estrutura Col-Major
+// Estrutura Quantizada (COL-MAJOR)
 //////////////////////////////////////////////////////////////
-struct ColMajorMatrix {
-    std::vector<float> weight;
+struct QuantizedMatrix {
+    std::vector<int8_t> weight;
+    std::vector<float> scales;
     int out_dim;
     int in_dim;
 };
 
 //////////////////////////////////////////////////////////////
-// Converter Row → Col Major
+// Quantização per-row → COL-MAJOR
 //////////////////////////////////////////////////////////////
-ColMajorMatrix to_col_major(
+QuantizedMatrix quantize_per_row_col_major(
     const std::vector<float>& W,
     int out_dim,
     int in_dim)
 {
-    ColMajorMatrix cm;
-    cm.out_dim = out_dim;
-    cm.in_dim = in_dim;
-    cm.weight.resize(out_dim * in_dim);
+    QuantizedMatrix qm;
+    qm.out_dim = out_dim;
+    qm.in_dim = in_dim;
+    qm.weight.resize(out_dim * in_dim);
+    qm.scales.resize(out_dim);
 
     for(int i=0;i<out_dim;i++)
-        for(int j=0;j<in_dim;j++)
-            cm.weight[j*out_dim + i] =
-                W[i*in_dim + j];
-
-    return cm;
-}
-
-//////////////////////////////////////////////////////////////
-// CPU GEMM
-//////////////////////////////////////////////////////////////
-void gemm_col_major(
-    const ColMajorMatrix& W,
-    const std::vector<float>& x,
-    std::vector<float>& y)
-{
-    int M = W.out_dim;
-    int K = W.in_dim;
-
-    y.assign(M, 0.f);
-
-    for(int i=0;i<M;i++)
     {
-        float acc = 0.f;
+        float max_v = 0.f;
 
-        for(int j=0;j<K;j++)
-            acc +=
-                W.weight[j*M + i] *
-                x[j];
+        for(int j=0;j<in_dim;j++)
+            max_v = std::max(max_v,
+                std::abs(W[i*in_dim + j]));
 
-        y[i] = acc;
+        float scale = max_v / 127.f;
+        if(scale == 0.f) scale = 1e-8f;
+
+        qm.scales[i] = scale;
+
+        for(int j=0;j<in_dim;j++)
+        {
+            int q = std::roundf(W[i*in_dim + j] / scale);
+            q = std::max(-127, std::min(127, q));
+            qm.weight[j*out_dim + i] = (int8_t)q;
+        }
     }
+
+    return qm;
 }
 
 //////////////////////////////////////////////////////////////
@@ -69,7 +61,7 @@ void gemm_col_major(
 //////////////////////////////////////////////////////////////
 int main(int argc, char** argv)
 {
-    std::cout << "--- [FFN 100% GPU FP32] ---\n";
+    std::cout << "--- [FFN 100% INT8 GPU] ---\n";
 
     if(argc < 2) {
         std::cout << "Uso: ./tinyllama_gpu model.safetensors\n";
@@ -89,26 +81,26 @@ int main(int argc, char** argv)
     load_safetensors_improved(argv[1], m);
 
     ////////////////////////////////////////////////////////////
-    // Converter W1, W3, W2 camada 0 para col-major
+    // ✅ Pré‑quantizar W1, W3, W2
     ////////////////////////////////////////////////////////////
 
-    auto w1 = to_col_major(
+    auto w1_int8 = quantize_per_row_col_major(
         m.layers[0].w1.data,
         m.hidden_dim,
         m.dim);
 
-    auto w3 = to_col_major(
+    auto w3_int8 = quantize_per_row_col_major(
         m.layers[0].w3.data,
         m.hidden_dim,
         m.dim);
 
-    auto w2 = to_col_major(
+    auto w2_int8 = quantize_per_row_col_major(
         m.layers[0].w2.data,
         m.dim,
         m.hidden_dim);
 
     ////////////////////////////////////////////////////////////
-    // Criar input normalizado
+    // Input normalizado
     ////////////////////////////////////////////////////////////
 
     int token = 15043;
@@ -131,141 +123,184 @@ int main(int argc, char** argv)
                     m.layers[0].norm_ffn.data[i];
 
     ////////////////////////////////////////////////////////////
-    // CPU referência
+    // Quantizar ativação inicial
     ////////////////////////////////////////////////////////////
 
-    std::vector<float> w1_cpu, w3_cpu;
+    float max_x = 0.f;
+    for(float v : x_norm)
+        max_x = std::max(max_x, std::abs(v));
 
-    gemm_col_major(w1, x_norm, w1_cpu);
-    gemm_col_major(w3, x_norm, w3_cpu);
+    float scale_x = max_x / 127.f;
+    if(scale_x == 0.f) scale_x = 1e-8f;
 
-    // SiLU * w3
-    std::vector<float> act_cpu(m.hidden_dim);
+    std::vector<int8_t> x_int8(m.dim);
 
-    for(int i=0;i<m.hidden_dim;i++)
+    for(int i=0;i<m.dim;i++)
     {
-        float silu = w1_cpu[i] /
-                     (1.0f + std::exp(-w1_cpu[i]));
-        act_cpu[i] = silu * w3_cpu[i];
+        int q = std::roundf(x_norm[i] / scale_x);
+        q = std::max(-127, std::min(127, q));
+        x_int8[i] = (int8_t)q;
     }
 
-    std::vector<float> w2_cpu;
-    gemm_col_major(w2, act_cpu, w2_cpu);
-
-    std::cout << "[CPU] w2[0]: "
-              << w2_cpu[0] << std::endl;
-
     ////////////////////////////////////////////////////////////
-    // GPU
+    // GPU setup
     ////////////////////////////////////////////////////////////
 
     cublasHandle_t handle;
     cublasCreate(&handle);
 
-    float *d_W1, *d_W3, *d_W2;
-    float *d_X, *d_W1out, *d_W3out, *d_ACT, *d_W2out;
+    int8_t *d_W1,*d_W3,*d_W2,*d_X,*d_ACT;
+    int32_t *d_W1i32,*d_W3i32,*d_W2i32;
 
-    cudaMalloc(&d_W1, m.hidden_dim*m.dim*sizeof(float));
-    cudaMalloc(&d_W3, m.hidden_dim*m.dim*sizeof(float));
-    cudaMalloc(&d_W2, m.dim*m.hidden_dim*sizeof(float));
+    cudaMalloc(&d_W1, m.hidden_dim*m.dim*sizeof(int8_t));
+    cudaMalloc(&d_W3, m.hidden_dim*m.dim*sizeof(int8_t));
+    cudaMalloc(&d_W2, m.dim*m.hidden_dim*sizeof(int8_t));
+    cudaMalloc(&d_X, m.dim*sizeof(int8_t));
+    cudaMalloc(&d_ACT, m.hidden_dim*sizeof(int8_t));
 
-    cudaMalloc(&d_X, m.dim*sizeof(float));
-    cudaMalloc(&d_W1out, m.hidden_dim*sizeof(float));
-    cudaMalloc(&d_W3out, m.hidden_dim*sizeof(float));
-    cudaMalloc(&d_ACT, m.hidden_dim*sizeof(float));
-    cudaMalloc(&d_W2out, m.dim*sizeof(float));
+    cudaMalloc(&d_W1i32, m.hidden_dim*sizeof(int32_t));
+    cudaMalloc(&d_W3i32, m.hidden_dim*sizeof(int32_t));
+    cudaMalloc(&d_W2i32, m.dim*sizeof(int32_t));
 
-    cudaMemcpy(d_W1, w1.weight.data(),
-               m.hidden_dim*m.dim*sizeof(float),
+    cudaMemcpy(d_W1, w1_int8.weight.data(),
+               m.hidden_dim*m.dim*sizeof(int8_t),
                cudaMemcpyHostToDevice);
 
-    cudaMemcpy(d_W3, w3.weight.data(),
-               m.hidden_dim*m.dim*sizeof(float),
+    cudaMemcpy(d_W3, w3_int8.weight.data(),
+               m.hidden_dim*m.dim*sizeof(int8_t),
                cudaMemcpyHostToDevice);
 
-    cudaMemcpy(d_W2, w2.weight.data(),
-               m.dim*m.hidden_dim*sizeof(float),
+    cudaMemcpy(d_W2, w2_int8.weight.data(),
+               m.dim*m.hidden_dim*sizeof(int8_t),
                cudaMemcpyHostToDevice);
 
-    cudaMemcpy(d_X, x_norm.data(),
-               m.dim*sizeof(float),
+    cudaMemcpy(d_X, x_int8.data(),
+               m.dim*sizeof(int8_t),
                cudaMemcpyHostToDevice);
 
-    float alpha = 1.0f;
-    float beta  = 0.0f;
+    int32_t alpha = 1;
+    int32_t beta  = 0;
 
-    // W1
-    cublasSgemm(handle,
-                CUBLAS_OP_N, CUBLAS_OP_N,
-                m.hidden_dim, 1, m.dim,
-                &alpha,
-                d_W1, m.hidden_dim,
-                d_X,  m.dim,
-                &beta,
-                d_W1out, m.hidden_dim);
+    ////////////////////////////////////////////////////////////
+    // W1 INT8
+    ////////////////////////////////////////////////////////////
 
-    // W3
-    cublasSgemm(handle,
-                CUBLAS_OP_N, CUBLAS_OP_N,
-                m.hidden_dim, 1, m.dim,
-                &alpha,
-                d_W3, m.hidden_dim,
-                d_X,  m.dim,
-                &beta,
-                d_W3out, m.hidden_dim);
+    cublasGemmEx(handle,
+                 CUBLAS_OP_N,CUBLAS_OP_N,
+                 m.hidden_dim,1,m.dim,
+                 &alpha,
+                 d_W1,CUDA_R_8I,m.hidden_dim,
+                 d_X,CUDA_R_8I,m.dim,
+                 &beta,
+                 d_W1i32,CUDA_R_32I,m.hidden_dim,
+                 CUBLAS_COMPUTE_32I,
+                 CUBLAS_GEMM_DEFAULT);
+
+    ////////////////////////////////////////////////////////////
+    // W3 INT8
+    ////////////////////////////////////////////////////////////
+
+    cublasGemmEx(handle,
+                 CUBLAS_OP_N,CUBLAS_OP_N,
+                 m.hidden_dim,1,m.dim,
+                 &alpha,
+                 d_W3,CUDA_R_8I,m.hidden_dim,
+                 d_X,CUDA_R_8I,m.dim,
+                 &beta,
+                 d_W3i32,CUDA_R_32I,m.hidden_dim,
+                 CUBLAS_COMPUTE_32I,
+                 CUBLAS_GEMM_DEFAULT);
 
     cudaDeviceSynchronize();
 
-    std::vector<float> w1_gpu(m.hidden_dim);
-    std::vector<float> w3_gpu(m.hidden_dim);
+    ////////////////////////////////////////////////////////////
+    // Copiar e aplicar escala
+    ////////////////////////////////////////////////////////////
 
-    cudaMemcpy(w1_gpu.data(), d_W1out,
-               m.hidden_dim*sizeof(float),
+    std::vector<int32_t> w1_i32(m.hidden_dim);
+    std::vector<int32_t> w3_i32(m.hidden_dim);
+
+    cudaMemcpy(w1_i32.data(), d_W1i32,
+               m.hidden_dim*sizeof(int32_t),
                cudaMemcpyDeviceToHost);
 
-    cudaMemcpy(w3_gpu.data(), d_W3out,
-               m.hidden_dim*sizeof(float),
+    cudaMemcpy(w3_i32.data(), d_W3i32,
+               m.hidden_dim*sizeof(int32_t),
                cudaMemcpyDeviceToHost);
 
-    // SiLU * w3 (CPU para simplicidade)
-    std::vector<float> act_gpu(m.hidden_dim);
+    std::vector<float> act(m.hidden_dim);
 
     for(int i=0;i<m.hidden_dim;i++)
     {
-        float silu = w1_gpu[i] /
-                     (1.0f + std::exp(-w1_gpu[i]));
-        act_gpu[i] = silu * w3_gpu[i];
+        float w1f =
+            w1_i32[i] *
+            w1_int8.scales[i] *
+            scale_x;
+
+        float w3f =
+            w3_i32[i] *
+            w3_int8.scales[i] *
+            scale_x;
+
+        float silu =
+            w1f / (1.0f + std::exp(-w1f));
+
+        act[i] = silu * w3f;
     }
 
-    cudaMemcpy(d_ACT, act_gpu.data(),
-               m.hidden_dim*sizeof(float),
+    ////////////////////////////////////////////////////////////
+    // Quantizar ativação intermediária
+    ////////////////////////////////////////////////////////////
+
+    float max_act=0;
+    for(float v:act)
+        max_act=std::max(max_act,std::abs(v));
+
+    float scale_act=max_act/127.f;
+    if(scale_act==0) scale_act=1e-8f;
+
+    std::vector<int8_t> act_int8(m.hidden_dim);
+
+    for(int i=0;i<m.hidden_dim;i++)
+    {
+        int q=std::roundf(act[i]/scale_act);
+        q=std::max(-127,std::min(127,q));
+        act_int8[i]=(int8_t)q;
+    }
+
+    cudaMemcpy(d_ACT, act_int8.data(),
+               m.hidden_dim*sizeof(int8_t),
                cudaMemcpyHostToDevice);
 
-    // W2
-    cublasSgemm(handle,
-                CUBLAS_OP_N, CUBLAS_OP_N,
-                m.dim, 1, m.hidden_dim,
-                &alpha,
-                d_W2, m.dim,
-                d_ACT, m.hidden_dim,
-                &beta,
-                d_W2out, m.dim);
+    ////////////////////////////////////////////////////////////
+    // W2 INT8
+    ////////////////////////////////////////////////////////////
+
+    cublasGemmEx(handle,
+                 CUBLAS_OP_N,CUBLAS_OP_N,
+                 m.dim,1,m.hidden_dim,
+                 &alpha,
+                 d_W2,CUDA_R_8I,m.dim,
+                 d_ACT,CUDA_R_8I,m.hidden_dim,
+                 &beta,
+                 d_W2i32,CUDA_R_32I,m.dim,
+                 CUBLAS_COMPUTE_32I,
+                 CUBLAS_GEMM_DEFAULT);
 
     cudaDeviceSynchronize();
 
-    std::vector<float> w2_gpu(m.dim);
+    std::vector<int32_t> w2_i32(m.dim);
 
-    cudaMemcpy(w2_gpu.data(),
-               d_W2out,
-               m.dim*sizeof(float),
+    cudaMemcpy(w2_i32.data(), d_W2i32,
+               m.dim*sizeof(int32_t),
                cudaMemcpyDeviceToHost);
 
-    std::cout << "[GPU] w2[0]: "
-              << w2_gpu[0] << std::endl;
+    float w20 =
+        w2_i32[0] *
+        w2_int8.scales[0] *
+        scale_act;
 
-    cudaFree(d_W1); cudaFree(d_W3); cudaFree(d_W2);
-    cudaFree(d_X); cudaFree(d_W1out); cudaFree(d_W3out);
-    cudaFree(d_ACT); cudaFree(d_W2out);
+    std::cout<<"[DEBUG] w2[0] INT8 GPU: "<<w20<<std::endl;
 
     cublasDestroy(handle);
 
