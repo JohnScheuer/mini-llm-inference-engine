@@ -164,6 +164,38 @@ Roofline‑validated performance scaling
 Deterministic SLA under load
 The runtime approaches the physical throughput limits of an RTX 2070 for this workload.
 
+🔥 Latest Milestone — Full INT8 GPU Execution (SM75)
+The engine now runs the entire Transformer in INT8 on GPU using Tensor Cores (validated on RTX 2070 / SM75).
+
+✅ What was achieved
+Full col‑major architecture aligned with BLAS
+Complete migration of all linear layers to GPU
+INT8 × INT8 → INT32 accumulation via cublasGemmEx
+Tensor Core execution validated numerically
+CPU vs GPU equivalence verified at each incremental step
+Stable quantization behavior (expected small numeric drift)
+This milestone marks the transition from a mathematical prototype to a true low-level GPU inference engine.
+
+All INT8 integration was performed incrementally:
+
+FP32 GPU baseline validated
+Reintroduced INT8 layer-by-layer
+Verified outputs after each change
+Ensured structural and numerical stability
+The runtime now supports:
+
+W8A8 Tensor Core execution
+Col-major GPU-native memory layout
+Full Transformer forward pass on GPU
+Next phase focuses on:
+
+Reducing memory transfers
+Persistent GPU buffers
+Kernel fusion
+Performance profiling and optimization
+
+
+
 Author: João Felipe De Souza
 
 
