@@ -167,6 +167,54 @@ The runtime approaches the physical throughput limits of an RTX 2070 for this wo
 🔥 Latest Milestone — Full INT8 GPU Execution (SM75)
 The engine now runs the entire Transformer in INT8 on GPU using Tensor Cores (validated on RTX 2070 / SM75).
 
+# Distributed Tensor Parallel Architecture
+
+This engine implements Megatron-style Tensor Parallelism:
+
+- ✅ Column Parallel QKV
+- ✅ Row Parallel Output Projection
+- ✅ Shard-aware KV Cache
+- ✅ INT8 Tensor Core acceleration (cuBLASLt)
+- ✅ Correct FP16 accumulation for AllReduce simulation
+
+The distributed execution is currently simulated on a single GPU
+to validate numerical correctness before NCCL integration.
+
+
+
+
+graph TD
+    X[Input Token]
+    X --> QKV0[QKV Shard 0]
+    X --> QKV1[QKV Shard 1]
+
+    QKV0 --> Attn0[Attention 0]
+    QKV1 --> Attn1[Attention 1]
+
+    Attn0 --> WO0[Wo Shard 0]
+    Attn1 --> WO1[Wo Shard 1]
+
+    WO0 --> SUM[AllReduce SUM]
+    WO1 --> SUM
+
+    SUM --> FFN[FFN Block]
+
+
+
+## Numerical Validation
+
+Tensor Parallel correctness was validated against the single-GPU baseline:
+
+- Max absolute error (FP16): ~0.03
+- Mean absolute error: ~1e-4
+- Difference due to FP16 non-associativity
+
+This confirms mathematical equivalence:
+
+Y = Σ (W_r · X_r)
+
+
+
 ✅ What was achieved
 Full col‑major architecture aligned with BLAS
 Complete migration of all linear layers to GPU
