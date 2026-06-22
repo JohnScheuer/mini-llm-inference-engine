@@ -244,6 +244,14 @@ Performance profiling and optimization
 
 
 
+### Current Limitations
+
+- NCCL integration pending
+- Execution currently simulated on a single GPU
+- Designed for multi-GPU scaling
+
+
+
 Author: João Felipe De Souza
 
 
