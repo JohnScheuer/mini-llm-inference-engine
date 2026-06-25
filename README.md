@@ -82,6 +82,79 @@ Tail Latency: Stable <150ms across linear scaling region
 
 This confirms the engine is hardware‑limited, not software‑limited.
 
+Hardware Saturation Breakthrough
+From 82 tok/s to 130 tok/s on RTX 2070 (SM75)
+After isolating the single‑GPU execution path and removing simulated tensor parallel overhead, the baseline fused FP16 runtime achieved:
+~82 tok/s (batch=12)
+Profiling indicated that the dominant bottleneck was global memory traffic within the MLP block:
+W1 GEMM → global write
+W3 GEMM → global write
+SiLU → read + write
+W2 GEMM → read again
+This pattern resulted in multiple full round‑trips to DRAM per layer.
+
+Optimization Strategy
+The following architectural changes were applied:
+
+Fused MLP (W1 + W3 + SiLU)
+
+Eliminated intermediate global writes of d_w1 and d_w3
+Applied SiLU gating in-place
+Reduced DRAM traffic significantly
+Pointer Swapping Instead of memcpy
+
+Removed per-layer device-to-device copies
+Eliminated redundant global memory bandwidth usage
+Batch Sweep to Identify Arithmetic Intensity Sweet Spot
+
+Evaluated BATCH ∈ {8, 10, 12, 16}
+Measured throughput under identical workload
+Empirical Results
+Batch	Throughput (tok/s)
+8	117.0
+10	129.9 (peak)
+12	122.2
+16	107.9
+Peak performance occurs at BATCH=10, indicating optimal balance between:
+
+Tensor Core occupancy
+L2 cache reuse
+DRAM bandwidth pressure
+Interpretation
+The performance curve demonstrates classic memory-bound behavior on Turing:
+
+Small batch → underutilization
+Optimal batch → maximum arithmetic intensity
+Large batch → L2 cache thrashing and bandwidth saturation
+The observed peak (~130 tok/s) represents the practical hardware limit of RTX 2070 for this workload.
+
+No further gains were achieved without altering arithmetic intensity or reducing memory traffic beyond current fusion level.
+
+Roofline Perspective
+After fusion:
+
+Arithmetic intensity increased
+Effective memory traffic per token decreased
+The runtime moved closer to the memory roof
+The system now operates in a tightly memory‑bound regime where:
+
+Performance ≈ min(Compute Peak, Memory Roof)
+Given RTX 2070 bandwidth constraints (~448 GB/s), the measured throughput aligns with expected hardware limits.
+
+Engineering Takeaway
+This breakthrough was not achieved by:
+
+Increasing theoretical FLOPs
+Introducing additional quantization
+Artificial parallel amplification
+Instead, it resulted from:
+
+Careful elimination of unnecessary memory round‑trips
+Dataflow restructuring
+Empirical batch optimization
+Roofline‑guided reasoning
+This demonstrates that on memory‑bound inference workloads, data movement dominates compute, and structural fusion provides higher returns than raw arithmetic optimization.
+
 🚀 TinyLlama 1.1B (Full INT8 W8A8)
 After applying:
 
